@@ -117,7 +117,7 @@ def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl, w_sfl_g
     """
     # 在子进程中重新构建模型
     # 这种方式可以避免在进程间传递复杂的、不可序列化的对象
-    print(f"CLIENT_{user_idx} START")
+    # print(f"CLIENT_{user_idx} START")
     if args.model == 'cnn' and args.dataset == 'cifar':
         local_net_hfl = CNNCifar(args=args)
         local_net_sfl = CNNCifar(args=args)
@@ -128,7 +128,7 @@ def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl, w_sfl_g
     else:
         # 退出或抛出错误
         exit('Error: unrecognized model in train_client')
-    print(f"CLIENT_{user_idx} TRAIN")
+    # print(f"CLIENT_{user_idx} TRAIN")
     # --- 训练分层模型 (HFL) ---
     local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx])
     local_net_hfl.load_state_dict(w_input_hfl)
