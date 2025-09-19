@@ -216,7 +216,7 @@ if __name__ == '__main__':
 
                 # 设置进程数，可以设置为CPU核心数或一个你指定的数字
                 # os.cpu_count() 可以获取你的机器有多少个CPU核心
-                num_processes = 2#min(args.num_users//3, (os.cpu_count())//3)
+                num_processes = 8#min(args.num_users//3, (os.cpu_count())//3)
                 print(
                     f"\n[Parallel Training] Starting training for {args.num_users} clients using {num_processes} processes...")
 
