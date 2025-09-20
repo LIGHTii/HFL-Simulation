@@ -137,7 +137,7 @@ def get_A(num_users, num_ESs):
     return A
 
 
-'''def get_B(num_ESs, num_EHs):
+def get_B(num_ESs, num_EHs):
     B = np.zeros((num_ESs, num_EHs), dtype=int)
 
     # 对每一行随机选择一个索引，将该位置设为 1
@@ -145,9 +145,9 @@ def get_A(num_users, num_ESs):
         random_index = np.random.randint(0, num_EHs)
         B[i, random_index] = 1
 
-    return B'''
+    return B
 
-
+'''
 def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distributions, num_EHs=None):
     """
     使用谱聚类生成 ES-EH 关联矩阵 B，并可视化聚类结果
@@ -176,7 +176,7 @@ def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distribu
     )
 
     return B  # 只返回B矩阵
-
+'''
 
 # ===== 根据 A、B 构造 C1 和 C2 =====
 def build_hierarchy(A, B):
@@ -269,7 +269,7 @@ if __name__ == '__main__':
 
     # 使用谱聚类生成B矩阵（替换原来的随机B矩阵）
     print("开始初始训练和谱聚类...")
-
+    '''
     # 1. 训练初始本地模型
     w_locals, client_label_distributions = train_initial_models(
         args, dataset_train, dict_users, net_glob, num_users
@@ -279,6 +279,8 @@ if __name__ == '__main__':
     B = get_B_cluster(
         args, w_locals, A, dict_users, net_glob, client_label_distributions, num_EHs
     )
+    '''
+    B =get_B(num_ESs, num_EHs)
 
     C1, C2 = build_hierarchy(A, B)
     print("C1 (一级->客户端):", C1)
