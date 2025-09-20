@@ -6,67 +6,56 @@ import copy
 import torch
 from torch import nn
 
-
-# from .shamir import use_shamir  # 如果不需要，应该删除这行
-
+from .shamir import use_shamir
 
 def FedAvg(w):
-    # 过滤掉None值
-    valid_w = [model for model in w if model is not None]
-
-    # 如果没有有效模型，返回None
-    if not valid_w:
+    if not w or all(w_i is None or not w_i for w_i in w):
+        print("Error: No valid models for FedAvg aggregation")
         return None
-
-    w_avg = copy.deepcopy(valid_w[0])
-    num = len(valid_w)
-
+    valid_models = [w_i for w_i in w if w_i is not None and w_i]
+    if not valid_models:
+        print("Error: No valid models after filtering")
+        return None
+    w_avg = copy.deepcopy(valid_models[0])
     for k in w_avg.keys():
-        for i in range(1, num):
-            w_avg[k] += valid_w[i][k]
-
-        w_avg[k] = torch.div(w_avg[k], num)
-
+        w_avg[k] = torch.zeros_like(w_avg[k])
+        count = 0
+        for i in range(len(valid_models)):
+            if valid_models[i] is not None and k in valid_models[i]:
+                w_avg[k] += valid_models[i][k]
+                count += 1
+        if count > 0:
+            w_avg[k] = torch.div(w_avg[k], count)
+        else:
+            print(f"Warning: No valid models for key {k}")
     return w_avg
-
 
 def FedAvg_layered(w, C):
     num_groups = len(C)
     grouped_w_avg = [None] * num_groups
 
-    # 遍历C中的每一个分组
     for group_id, client_indices in C.items():
-        # 如果分组为空，则跳过
         if not client_indices:
+            print(f"Warning: Group {group_id} has no clients, skipping")
             continue
-
-        # 获取当前分组的所有模型参数，过滤掉None值
-        group_models = [w[i] for i in client_indices if w[i] is not None]
-
-        # 如果没有有效模型，跳过这个分组
+        group_models = [w[i] for i in client_indices if i < len(w) and w[i] is not None and w[i]]
         if not group_models:
+            print(f"Error: No valid models for group {group_id}")
             continue
-
-        # 深度拷贝第一个模型的参数作为初始值
         w_avg = copy.deepcopy(group_models[0])
-        num = len(group_models)
-
-        # 遍历模型参数的每一层
         for k in w_avg.keys():
-            # 从第二个模型开始，累加所有参数
-            for i in range(1, num):
-                w_avg[k] += group_models[i][k]
-
-            # 除以该组客户端的数量，求得平均值
-            w_avg[k] = torch.div(w_avg[k], num)
-
-        # 将计算出的平均模型存入列表的对应位置
+            w_avg[k] = torch.zeros_like(w_avg[k])
+            count = 0
+            for i in range(len(group_models)):
+                if group_models[i] is not None and k in group_models[i]:
+                    w_avg[k] += group_models[i][k]
+                    count += 1
+            if count > 0:
+                w_avg[k] = torch.div(w_avg[k], count)
+            else:
+                print(f"Warning: No valid models for key {k} in group {group_id}")
         if group_id < num_groups:
             grouped_w_avg[group_id] = w_avg
         else:
-            # 如果group_id超出现有列表长度，扩展列表
-            while len(grouped_w_avg) <= group_id:
-                grouped_w_avg.append(None)
-            grouped_w_avg[group_id] = w_avg
-
+            print(f"Warning: Group ID {group_id} exceeds expected range")
     return grouped_w_avg

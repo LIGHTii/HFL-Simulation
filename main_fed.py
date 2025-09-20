@@ -3,7 +3,6 @@
 # Python version: 3.6
 import os
 import matplotlib
-
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import copy
@@ -12,17 +11,57 @@ from torchvision import datasets, transforms
 import torch
 from tqdm import tqdm
 import multiprocessing
-import os
 import csv
 from datetime import datetime
 
+# 修正导入语句
+from utils.options import args_parser  # 替换 import args
+from bipartite_bandwidth import run_bandwidth_allocation
 from utils.sampling import mnist_iid, mnist_noniid, cifar_iid
-from utils.options import args_parser
 from models.Update import LocalUpdate
 from models.Nets import MLP, CNNMnist, CNNCifar
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
 
+
+def calculate_comm_overhead(args, assignments, r, B_n, C1, k2, k3, model_size):
+    """
+    计算逐层通信开销（延迟，秒）。
+    - Client-ES: 每个ES下 max( model_size / r_mn ) * k2
+    - ES-EH/Cloud: max( model_size / B_n[ES] ) * k3
+    - 返回每epoch开销、客户端到ES延迟列表、ES到云的最大延迟
+    """
+    num_ESs = len(C1)
+    # Client-ES层：每个ES的最大客户端延迟（上传/下载对称）
+    es_client_delays = []
+    for es_idx in range(num_ESs):
+        clients = C1[es_idx]
+        if not clients:
+            es_client_delays.append(0.0)
+            continue
+        max_client_delay = 0.0
+        for client_idx in clients:
+            for m, n in assignments:
+                if m == client_idx and n == es_idx:
+                    r_mn = r[m, n] / 8  # bit/s to bytes/s (除以8)
+                    if r_mn > 0:
+                        client_delay = model_size / r_mn  # 秒
+                        max_client_delay = max(max_client_delay, client_delay)
+                    break
+        es_client_delays.append(max_client_delay * k2)  # 累加k2轮
+    client_es_total = sum(es_client_delays)  # 所有ES累加
+
+    # ES-EH/Cloud层：所有ES的最大延迟
+    es_cloud_delays = []
+    for es_idx in range(num_ESs):
+        if B_n[es_idx] > 0:
+            es_delay = model_size / (B_n[es_idx] / 8)  # bit/s to bytes/s
+            es_cloud_delays.append(es_delay)
+    max_es_cloud_delay = max(es_cloud_delays) if es_cloud_delays else 0.0
+    es_cloud_total = max_es_cloud_delay * k3  # 以最长ES为准，累加k3轮
+
+    epoch_overhead = client_es_total + es_cloud_total  # 逐层累加
+    return epoch_overhead, es_client_delays, max_es_cloud_delay
 
 def get_data(args):
     if args.dataset == 'mnist':
@@ -69,14 +108,19 @@ def build_model(args, dataset_train):
     return net_glob
 
 
-def get_A(num_users, num_ESs):
+def get_A_from_assignments(assignments, num_users, num_ESs):
     A = np.zeros((num_users, num_ESs), dtype=int)
+    print(f"Creating A matrix with shape: ({num_users}, {num_ESs})")
+    print(f"Assignments: {assignments}")
 
-    # 对每一行随机选择一个索引，将该位置设为 1
-    for i in range(num_users):
-        random_index = np.random.randint(0, num_ESs)
-        A[i, random_index] = 1
-
+    for m, n in assignments:
+        if n < 0 or n >= num_ESs:
+            print(f"Warning: Invalid edge server index {n} for client {m}, skipping (valid range: 0 to {num_ESs - 1})")
+            continue
+        if m < 0 or m >= num_users:
+            print(f"Warning: Invalid client index {m}, skipping (valid range: 0 to {num_users - 1})")
+            continue
+        A[m, n] = 1
     return A
 
 
@@ -147,66 +191,112 @@ def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl, w_sfl_g
     # 返回结果，包括 user_idx 以便后续排序
     return user_idx, copy.deepcopy(w_hfl), loss_hfl, copy.deepcopy(w_sfl), loss_sfl
 
-def save_results_to_csv(results, filename):
+def save_results_to_csv(results, final_results, filename):
     """Save results to CSV file"""
+    import csv
     with open(filename, 'w', newline='') as csvfile:
         fieldnames = ['epoch', 'hfl_test_acc', 'hfl_test_loss', 'sfl_test_acc', 'sfl_test_loss']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
         writer.writeheader()
         for result in results:
             writer.writerow(result)
+        # 只有当 final_results 不为空时才写入最终结果
+        if final_results:
+            writer.writerow({key: '' for key in fieldnames})  # 空行分隔符
+            writer.writerow({'epoch': 'Final Results'})
+            for key, value in final_results.items():
+                writer.writerow({'epoch': key, 'hfl_test_acc': value if key == 'hfl_test_acc' else '',
+                                'hfl_test_loss': value if key == 'hfl_test_loss' else '',
+                                'sfl_test_acc': value if key == 'sfl_test_acc' else '',
+                                'sfl_test_loss': value if key == 'sfl_test_loss' else ''})
+
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn', force=True)
-    # parse args
+
+    os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"  # 临时保留
+    test_mode = True  # 或通过 args.test_mode 设置
+    num_processes = min(4, os.cpu_count() or 1)  # 优化进程数
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
 
-    dataset_train, dataset_test, dict_users = get_data(args)
+    # 强制设置测试模式的 num_users
+    if test_mode:
+        args.num_users = 10
 
-    net_glob = build_model(args, dataset_train)
+    # 调用带宽分配
+    bipartite_graph, client_nodes, es_nodes, distance_matrix, r, assignments, loads, B_n = run_bandwidth_allocation(
+        num_users=args.num_users
+    )
+    if bipartite_graph is None:
+        exit("错误：无法构建二部图，请检查 graph-example/Ulaknet.graphml 文件。")
 
-    net_glob.train()
+    # 调试：验证 run_bandwidth_allocation 输出
+    num_ESs = len(es_nodes)
+    print(f"Number of edge servers (num_ESs): {num_ESs}")
+    print(f"Edge server nodes: {es_nodes}")
+    print(f"Assignments before processing: {assignments}")
+    invalid_assignments = [(m, n) for m, n in assignments if n >= num_ESs or n < 0]
+    if invalid_assignments:
+        print(f"Error: Invalid assignments detected: {invalid_assignments}")
+        exit("错误：分配中包含无效的边缘服务器索引")
 
-    # 初始化全局权重
-    w_glob = net_glob.state_dict()
-    num_users = args.num_users
-    num_ESs = num_users // 5
-    num_EHs = num_ESs // 3
-    k2 = 2
-    k3 = 2
-    num_processes = 8  # min(args.num_users//3, (os.cpu_count())//3)
+    args.num_users = min(args.num_users, len(client_nodes))
 
-    A = get_A(num_users, num_ESs)
+    if test_mode:
+        print("进入测试模式：减少参数以进行快速验证。")
+        args.epochs = 2
+        args.num_users = min(10, args.num_users)
+        client_nodes = client_nodes[:args.num_users]
+        assignments = [(i, j) for i, j in assignments if i < args.num_users]
+        print(f"Assignments after test mode filtering: {assignments}")
+        num_processes = min(2, num_processes)
+        k2 = 1
+        k3 = 1
+        num_EHs = max(1, num_ESs // 5)
+        dataset_train, dataset_test, dict_users = get_data(args)
+    else:
+        dataset_train, dataset_test, dict_users = get_data(args)
+        k2 = 2
+        k3 = 2
+        num_EHs = num_ESs // 3
+
+    # 检查数据集
+    for idx in dict_users:
+        if len(dict_users[idx]) == 0:
+            print(f"Warning: Client {idx} has empty dataset")
+
+    A = get_A_from_assignments(assignments, args.num_users, num_ESs)
     B = get_B(num_ESs, num_EHs)
-
     C1, C2 = build_hierarchy(A, B)
     print("C1 (一级->客户端):", C1)
     print("C2 (二级->一级):", C2)
+
+    net_glob = build_model(args, dataset_train)
+    net_glob.train()
+    w_glob = net_glob.state_dict()
 
     # 创建结果保存目录
     if not os.path.exists('./results'):
         os.makedirs('./results')
 
-    # 生成唯一的时间戳用于文件名
+    # 生成唯一时间戳用于文件名
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_filename = f'./results/training_results_{timestamp}.csv'
 
     # 初始化结果记录列表
     results_history = []
+    final_results = {}  # 初始化 final_results 为空字典，避免未定义问题
+
+    # 新增：初始化通信开销
+    total_comm_overhead = 0.0  # 总通信开销 (秒)
 
     # 训练前测试初始模型
-    print("\n--- Testing Initial Global Models ---")
+    print("\n--- 测试初始全局模型 ---")
     net_glob.eval()
-
-    # 测试初始 HFL 模型
     acc_hfl_init, loss_hfl_init = test_img(net_glob, dataset_test, args)
-    print(f"Initial HFL Model - Testing accuracy: {acc_hfl_init:.2f}%, Loss: {loss_hfl_init:.4f}")
-
-    # 测试初始 SFL 模型
+    print(f"初始 HFL 模型 - 测试准确率: {acc_hfl_init:.2f}%, 损失: {loss_hfl_init:.4f}")
     acc_sfl_init, loss_sfl_init = test_img(net_glob, dataset_test, args)
-    print(f"Initial SFL Model - Testing accuracy: {acc_sfl_init:.2f}%, Loss: {loss_sfl_init:.4f}")
+    print(f"初始 SFL 模型 - 测试准确率: {acc_sfl_init:.2f}%, 损失: {loss_sfl_init:.4f}")
 
     # 记录初始结果
     results_history.append({
@@ -216,21 +306,15 @@ if __name__ == '__main__':
         'sfl_test_acc': acc_sfl_init,
         'sfl_test_loss': loss_sfl_init
     })
+    save_results_to_csv(results_history, {}, csv_filename)  # 使用空字典
 
-    # 保存初始结果到CSV
-    save_results_to_csv(results_history, csv_filename)
-
-    # training
-    # --- 初始化两个模型，确保初始权重相同 ---
-    # net_glob_hfl 是 HFL 的全局模型
+    # --- 初始化两个模型 ---
     net_glob_hfl = net_glob
     w_glob_hfl = net_glob_hfl.state_dict()
-
-    # net_glob_sfl 是 SFL 的全局模型
     net_glob_sfl = copy.deepcopy(net_glob)
     w_glob_sfl = net_glob_sfl.state_dict()
 
-    # --- 分别记录两种模型的指标 ---
+    # --- 记录指标 ---
     loss_train_hfl = []
     loss_train_sfl = []
     loss_test_hfl = []
@@ -259,27 +343,22 @@ if __name__ == '__main__':
 
             # ES 层聚合 k2 轮
             for t2 in range(k2):
-                # --- 本地训练 (HFL 和 SFL 并行) ---
                 # HFL: ES 层 -> Client 层
-                w_locals_input_hfl = [None] * num_users
+                w_locals_input_hfl = [None] * args.num_users
                 for ES_idx, user_indices in C1.items():
                     for user_idx in user_indices:
                         w_locals_input_hfl[user_idx] = copy.deepcopy(ESs_ws_input_hfl[ES_idx])
 
-                # 用于存储两种模型本地训练的输出
-                w_locals_output_hfl = [None] * num_users
-                w_locals_output_sfl = [None] * num_users
+                # 用于存储训练输出
+                w_locals_output_hfl = [None] * args.num_users
+                w_locals_output_sfl = [None] * args.num_users
                 loss_locals_hfl = []
                 loss_locals_sfl = []
 
                 print(
                     f"\n[Parallel Training] Starting training for {args.num_users} clients using {num_processes} processes...")
-
-                # 准备传递给每个子进程的参数
                 tasks = []
-                for user_idx in range(num_users):
-                    # 注意：这里我们不传递完整的 net_glob_hfl 和 net_glob_sfl 对象
-                    # 因为它们可能不可序列化。我们已经在工作函数内部重新构建它们。
+                for user_idx in range(args.num_users):
                     task_args = (
                         args, user_idx, dataset_train, dict_users,
                         w_locals_input_hfl[user_idx], w_glob_sfl,
@@ -287,70 +366,77 @@ if __name__ == '__main__':
                     tasks.append(task_args)
                 print("成功创建多线程！")
 
-                # 创建进程池并分发任务
-                # 使用 with 语句可以自动管理进程池的关闭
                 with multiprocessing.Pool(processes=num_processes) as pool:
-                    # ===================== 主要修改点 =====================
-                    # 使用 tqdm 包装 tasks 列表，以在多进程训练期间显示进度条。
-                    # desc 参数为进度条提供一个描述性标签。
-                    # 随着每个客户端训练任务的完成，进度条会自动更新。
-                    # ====================================================
                     results = pool.starmap(train_client,
                                            tqdm(tasks, desc=f"Epoch {epoch}|{t3 + 1}|{t2 + 1} Training Clients"))
 
                 print("训练结束")
-                # 3. 收集并整理所有客户端的训练结果
-                # 因为 starmap 保证了顺序，我们可以直接处理
-                # 如果使用 imap_unordered，则需要根据返回的 user_idx 来排序
                 for result in results:
                     u_idx, w_h, l_h, w_s, l_s = result
+                    if w_h is None or not w_h:
+                        print(f"Warning: Client {u_idx} returned invalid HFL weights")
+                        w_h = {}
+                    if w_s is None or not w_s:
+                        print(f"Warning: Client {u_idx} returned invalid SFL weights")
+                        w_s = {}
                     w_locals_output_hfl[u_idx] = w_h
                     loss_locals_hfl.append(l_h)
                     w_locals_output_sfl[u_idx] = w_s
                     loss_locals_sfl.append(l_s)
                 print("排序结束")
                 print(f"[Parallel Training] All {args.num_users} clients have finished training.")
+
                 print(f'\nEpoch {epoch} | EH_R {t3 + 1}/{k3} | ES_R {t2 + 1}/{k2} | 开始聚合')
-
-                # --- HFL 聚合 (Client -> ES) ---
                 ESs_ws_input_hfl = FedAvg_layered(w_locals_output_hfl, C1)
-
-                # --- SFL 全局聚合 (Client -> Cloud) ---
+                if ESs_ws_input_hfl is None or all(w is None for w in ESs_ws_input_hfl):
+                    print("错误：HFL ES层聚合失败，无有效模型参数")
+                    continue
                 w_glob_sfl = FedAvg(w_locals_output_sfl)
+                if w_glob_sfl is None:
+                    print("错误：SFL 全局模型聚合失败")
+                    continue
                 net_glob_sfl.load_state_dict(w_glob_sfl)
 
-                # --- 记录损失 ---
-                loss_avg_hfl = sum(loss_locals_hfl) / len(loss_locals_hfl)
-                loss_avg_sfl = sum(loss_locals_sfl) / len(loss_locals_sfl)
+                loss_avg_hfl = sum([l for l in loss_locals_hfl if l != float('inf')]) / max(1, len([l for l in
+                                                                                                    loss_locals_hfl if
+                                                                                                    l != float('inf')]))
+                loss_avg_sfl = sum([l for l in loss_locals_sfl if l != float('inf')]) / max(1, len([l for l in
+                                                                                                    loss_locals_sfl if
+                                                                                                    l != float('inf')]))
                 loss_train_hfl.append(loss_avg_hfl)
                 loss_train_sfl.append(loss_avg_sfl)
-
                 print(
-                    f'\nEpoch {epoch} | EH_R {t3 + 1}/{k3} | ES_R {t2 + 1}/{k2} | HFL Loss {loss_avg_hfl:.4f} | SFL Loss {loss_avg_sfl:.4f}')
+                    f'Epoch {epoch} | EH_R {t3 + 1}/{k3} | ES_R {t2 + 1}/{k2} | HFL Loss {loss_avg_hfl:.4f} | SFL Loss {loss_avg_sfl:.4f}')
 
             # HFL 聚合 (ES -> EH)
             EHs_ws_hfl = FedAvg_layered(ESs_ws_input_hfl, C2)
+            if EHs_ws_hfl is None or all(w is None for w in EHs_ws_hfl):
+                print("错误：HFL EH层聚合失败，无有效模型参数")
+                continue
 
         # HFL 全局聚合 (EH -> Cloud)
-        # HFL 的全局模型只在 k3 轮结束后才更新一次
         w_glob_hfl = FedAvg(EHs_ws_hfl)
+        if w_glob_hfl is None:
+            print("错误：HFL 全局模型聚合失败")
+            continue
         net_glob_hfl.load_state_dict(w_glob_hfl)
 
-        # --- 在每个 EPOCH 结束时进行测试 ---
+        # 计算通信开销
+        epoch_overhead, es_client_delays, max_es_cloud_delay = calculate_comm_overhead(args, assignments, r, B_n, C1,
+                                                                                       k2, k3, args.model_size)
+        total_comm_overhead += epoch_overhead
+        print(
+            f'Epoch {epoch} Communication Overhead: {epoch_overhead:.4f}s (Client-ES: {max(es_client_delays):.4f}s max, ES-Cloud: {max_es_cloud_delay:.4f}s max)')
+        # 测试
         net_glob_hfl.eval()
         net_glob_sfl.eval()
-
-        # 评估 HFL 模型
         acc_hfl, loss_hfl = test_img(net_glob_hfl, dataset_test, args)
+        acc_sfl, loss_sfl = test_img(net_glob_sfl, dataset_test, args)
         acc_test_hfl.append(acc_hfl)
         loss_test_hfl.append(loss_hfl)
-
-        # 评估 SFL 模型
-        acc_sfl, loss_sfl = test_img(net_glob_sfl, dataset_test, args)
         acc_test_sfl.append(acc_sfl)
         loss_test_sfl.append(loss_sfl)
 
-        # 记录当前epoch的结果
         results_history.append({
             'epoch': epoch,
             'hfl_test_acc': acc_hfl,
@@ -358,25 +444,19 @@ if __name__ == '__main__':
             'sfl_test_acc': acc_sfl,
             'sfl_test_loss': loss_sfl
         })
+        save_results_to_csv(results_history, {}, csv_filename)  # 使用空字典
 
-        # 保存结果到CSV
-        save_results_to_csv(results_history, csv_filename)
-
-        # 打印当前 EPOCH 结束时的测试结果
         print(
-            f'\nEpoch {epoch} [END OF EPOCH TEST] | HFL Acc: {acc_hfl:.2f}%, Loss: {loss_hfl:.4f} | SFL Acc: {acc_sfl:.2f}%, Loss: {loss_sfl:.4f}')
+            f'Epoch {epoch} [END OF EPOCH TEST] | HFL Acc: {acc_hfl:.2f}%, Loss: {loss_hfl:.4f} | SFL Acc: {acc_sfl:.2f}%, Loss: {loss_sfl:.4f}')
 
-        # 检查是否达到停止条件
         if acc_hfl >= 95.0:
             print(f"HFL accuracy reached {acc_hfl:.2f}% at epoch {epoch}. Stopping training early.")
             early_stop = True
 
-        net_glob_hfl.train()  # 切换回训练模式
-        net_glob_sfl.train()  # 切换回训练模式
+        net_glob_hfl.train()
+        net_glob_sfl.train()
 
-    # =====================================================================================
-    # Plot loss curve
-    # =====================================================================================
+    # 绘制损失曲线
     plt.figure()
     plt.plot(range(len(loss_train_hfl)), loss_train_hfl, label='HFL (3-layer)')
     plt.plot(range(len(loss_train_sfl)), loss_train_sfl, label='SFL (Frequent Update)')
@@ -387,9 +467,8 @@ if __name__ == '__main__':
     plt.savefig(
         './save/fed_compare_freq_{}_{}_{}_C{}_iid{}.png'.format(args.dataset, args.model, args.epochs, args.frac,
                                                                 args.iid))
-    # =====================================================================================
-    # Plot test loss curve
-    # =====================================================================================
+    plt.close()
+
     plt.figure()
     plt.plot(range(len(loss_test_hfl)), loss_test_hfl, label='HFL (Test Loss)')
     plt.plot(range(len(loss_test_sfl)), loss_test_sfl, label='SFL (Test Loss)')
@@ -400,27 +479,22 @@ if __name__ == '__main__':
     plt.savefig(
         './save/fed_test_loss_{}_{}_{}_C{}_iid{}.png'.format(args.dataset, args.model, args.epochs, args.frac,
                                                              args.iid))
-    plt.show()
+    plt.close()
 
-    # =====================================================================================
-    # Testing
-    # =====================================================================================
+    # 最终评估
     print("\n--- Final Model Evaluation ---")
-    # 测试 HFL 模型
     net_glob_hfl.eval()
     acc_train_hfl, loss_train_hfl = test_img(net_glob_hfl, dataset_train, args)
     acc_test_hfl, loss_test_hfl = test_img(net_glob_hfl, dataset_test, args)
-    print(f"HFL Model (Slower Global Update) - Training accuracy: {acc_train_hfl:.2f}%")
-    print(f"HFL Model (Slower Global Update) - Testing accuracy: {acc_test_hfl:.2f}%")
+    print(f"HFL Model - Training accuracy: {acc_train_hfl:.2f}%")
+    print(f"HFL Model - Testing accuracy: {acc_test_hfl:.2f}%")
 
-    # 测试 SFL 模型
     net_glob_sfl.eval()
     acc_train_sfl, loss_train_sfl = test_img(net_glob_sfl, dataset_train, args)
     acc_test_sfl, loss_test_sfl = test_img(net_glob_sfl, dataset_test, args)
-    print(f"SFL Model (Frequent Global Update) - Training accuracy: {acc_train_sfl:.2f}%")
-    print(f"SFL Model (Frequent Global Update) - Testing accuracy: {acc_test_sfl:.2f}%")
+    print(f"SFL Model - Training accuracy: {acc_train_sfl:.2f}%")
+    print(f"SFL Model - Testing accuracy: {acc_test_sfl:.2f}%")
 
-    # 保存最终结果
     final_results = {
         'hfl_train_acc': acc_train_hfl,
         'hfl_train_loss': loss_train_hfl,
@@ -429,15 +503,11 @@ if __name__ == '__main__':
         'sfl_train_acc': acc_train_sfl,
         'sfl_train_loss': loss_train_sfl,
         'sfl_test_acc': acc_test_sfl,
-        'sfl_test_loss': loss_test_sfl
+        'sfl_test_loss': loss_test_sfl,
+        'total_comm_overhead': total_comm_overhead
     }
 
-    # 将最终结果追加到CSV文件
-    with open(csv_filename, 'a', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow([])  # 空行分隔
-        writer.writerow(['Final Results'])
-        for key, value in final_results.items():
-            writer.writerow([key, value])
+    save_results_to_csv(results_history, final_results, csv_filename)
 
     print(f"\nAll results saved to {csv_filename}")
+    print(f"\nTotal Communication Overhead over {args.epochs} epochs: {total_comm_overhead:.4f}s")
