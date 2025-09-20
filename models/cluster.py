@@ -22,48 +22,46 @@ def distance(x1, x2):
     return np.sqrt(np.sum((x1 - x2) ** 2))
 
 
-def getW(data, sigma):
-    """构建邻接矩阵 W，直接使用欧式距离"""
+def get_dist_matrix(data):
+    """获取距离矩阵"""
     n = len(data)
-    W = np.zeros((n, n))
+    dist_matrix = np.zeros((n, n))
     for i in range(n):
-        for j in range(n):
-            if i != j:
-                W[i][j] = distance(data[i], data[j])
-    return W
+        for j in range(i + 1, n):
+            dist_matrix[i][j] = dist_matrix[j][i] = distance(data[i], data[j])
+    return dist_matrix
 
-def calculateGraphData(data, sigma):
-    """
-    计算图的相似度矩阵 W 和归一化拉普拉斯矩阵 L_sym
-    L_sym = D^{-1/2} (D - W) D^{-1/2}
-    """
-    W = getW(data, sigma)
-    D = np.diag(np.sum(W, axis=1))
-    D_sqrt = np.diag(1.0 / np.sqrt(np.diag(D)))
-    L_sym = D_sqrt @ (D - W) @ D_sqrt
-    return W, L_sym
+def getW(data):
+    """获得对称的权重矩阵 (这里直接用距离矩阵)"""
+    return get_dist_matrix(data)
 
 
-def getEigen(L, cluster_num):
+def getEigen(W, cluster_num):
     """
-    计算拉普拉斯矩阵的特征向量
-    取前 cluster_num 个最大特征值对应的特征向量
+    获得距离矩阵 W 的前 cluster_num 个最小特征值对应的特征向量
     """
-    eigval, eigvec = np.linalg.eig(L)
+    eigval, eigvec = np.linalg.eig(W)
     idx = np.argsort(eigval.real)  # 按实部 从小到大排序
-    selected_idx = idx[-cluster_num:]  # 改为取最大的 cluster_num 个特征值
+    selected_idx = idx[:cluster_num]  # 改为取最大的 cluster_num 个特征值
     return eigvec[:, selected_idx].real
 
 
-def spectralPartitionGraph(L_sym, cluster_num):
-    """使用谱聚类对图进行划分"""
-    # 计算特征向量
-    eigvec = getEigen(L_sym, cluster_num)
-    # 标准化（避免长度差异影响）
-    eigvec_normalized = eigvec / (np.linalg.norm(eigvec, axis=1, keepdims=True) + 1e-12)
-    # 用 KMeans 在特征空间中聚类
+def spectralPartitionGraph(W, cluster_num):
+    """
+    使用距离矩阵 W 进行谱聚类
+    """
+    # 获取特征向量
+    eigvec = getEigen(W, cluster_num)
+
+    # 标准化特征向量
+    norms = np.linalg.norm(eigvec, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    eigvec_normalized = eigvec / norms
+
+    # KMeans 聚类
     kmeans = KMeans(n_clusters=cluster_num, n_init=10, random_state=42)
     labels = kmeans.fit_predict(eigvec_normalized)
+
     return labels
 
 
@@ -78,46 +76,63 @@ def calculate_intra_cluster_distance(data, labels, cluster_num):
     return total_distance
 
 
-def find_optimal_clusters_binary_search(data, sigma=0.4, epsilon=None):
+def find_optimal_clusters_binary_search(data, epsilon=None, max_clusters=None):
     """
-    使用二分搜索选择最优簇数
-    目标：找到最小的簇数，使簇内距离和 <= epsilon
+    使用二分搜索找到满足簇内距离和小于 epsilon 的最小簇数
     """
     n = len(data)
-    W, L_sym = calculateGraphData(data, sigma)
+    if max_clusters is None:
+        max_clusters = n
 
-    # 全局方差（作为阈值的基准）
+    # 计算距离矩阵
+    W = getW(data)
+
+    # 全局方差作为参考
     global_centroid = np.mean(data, axis=0)
     global_variance = np.sum((data - global_centroid) ** 2)
 
     if epsilon is None:
-        # 如果用户没指定，默认阈值 = 全局方差的 2%
         epsilon = 0.02 * global_variance
-        print(f"[谱聚类] 自动阈值 ε = {epsilon:.4f}")
+        print(f"使用自动计算的 epsilon 阈值: {epsilon:.4f}")
 
-    min_clusters, max_clusters = 1, n
-    best_clusters, best_labels = n, None
+    min_clusters = 1
+    best_clusters = max_clusters
+    best_labels = None
+    search_history = []
 
-    # 二分搜索过程
     while min_clusters <= max_clusters:
-        mid = (min_clusters + max_clusters) // 2
-        labels = spectralPartitionGraph(L_sym, mid)
-        intra_distance = calculate_intra_cluster_distance(data, labels, mid)
-        print(f"[谱聚类] 尝试簇数: {mid}, 簇内距离和: {intra_distance:.4f}, 阈值: {epsilon:.4f}")
+        mid_clusters = (min_clusters + max_clusters) // 2
+        labels = spectralPartitionGraph(W, mid_clusters)
+        intra_distance = calculate_intra_cluster_distance(data, labels, mid_clusters)
+
+        search_history.append((mid_clusters, intra_distance))
+        print(f"簇数: {mid_clusters}, 簇内距离和: {intra_distance:.4f}, 阈值: {epsilon:.4f}")
 
         if intra_distance <= epsilon:
-            best_clusters, best_labels = mid, labels
-            max_clusters = mid - 1  # 尝试更少的簇
+            best_clusters, best_labels = mid_clusters, labels
+            max_clusters = mid_clusters - 1
         else:
-            min_clusters = mid + 1  # 需要更多的簇
+            min_clusters = mid_clusters + 1
 
-    # 如果没有满足条件的，兜底用最大簇数
     if best_labels is None:
-        best_clusters = n
-        best_labels = spectralPartitionGraph(L_sym, best_clusters)
-        print(f"[谱聚类] 未找到满足条件的簇数，使用最大簇数: {best_clusters}")
+        best_clusters = max_clusters
+        best_labels = spectralPartitionGraph(W, best_clusters)
+        print(f"未找到满足条件的簇数，使用最大簇数: {best_clusters}")
+
+    if search_history:
+        clusters, distances = zip(*search_history)
+        plt.figure(figsize=(10, 6))
+        plt.plot(clusters, distances, 'bo-', label='簇内距离和')
+        plt.axhline(y=epsilon, color='r', linestyle='--', label='阈值')
+        plt.xlabel('簇数')
+        plt.ylabel('簇内距离和')
+        plt.title('二分搜索过程')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
 
     return best_clusters, best_labels
+
 
 
 def cluster(data, sigma=0.4, epsilon=None, cluster_num=None):
@@ -127,10 +142,11 @@ def cluster(data, sigma=0.4, epsilon=None, cluster_num=None):
     - 否则使用指定的簇数
     """
     if cluster_num is None:
-        return find_optimal_clusters_binary_search(data, sigma, epsilon)
+        cluster_num, labels = find_optimal_clusters_binary_search(data, epsilon=epsilon)
+        return cluster_num, labels
     else:
-        W, L_sym = calculateGraphData(data, sigma)
-        labels = spectralPartitionGraph(L_sym, cluster_num)
+        W = getW(data)
+        labels = spectralPartitionGraph(W, cluster_num)
         return cluster_num, labels
 
 
