@@ -197,30 +197,38 @@ def partition_data_custom(dataset_type, num_clients, data_path, partition_method
         raise ValueError(f"不支持的分区方法: {partition_method}")
     
     # 记录数据统计
-    data_stats = record_data_statistics(y_train, client_data_mapping)
+    data_stats = record_data_statistics(y_train, client_data_mapping, num_classes)
     
     return X_train, y_train, X_test, y_test, client_data_mapping, data_stats
 
 
-def record_data_statistics(y_train, client_data_mapping):
+def record_data_statistics(y_train, client_data_mapping, num_classes):
     """
     记录客户端数据统计信息
-    
+
     Args:
         y_train: 训练标签
         client_data_mapping: 客户端数据映射
-    
+        num_classes: 类别数量
+
     Returns:
         dict: 数据统计信息
     """
     client_class_counts = {}
-    
+
+    print("\n各客户端数据分布统计:")
+    print("客户端ID\t总样本数\t" + "\t".join([f"类别{i}" for i in range(num_classes)]))
+
     for client_id, data_idxs in client_data_mapping.items():
         unq, unq_cnt = np.unique(y_train[data_idxs], return_counts=True)
         tmp = {unq[i]: unq_cnt[i] for i in range(len(unq))}
         client_class_counts[client_id] = tmp
-    
-    # print('客户端数据分布统计:', client_class_counts)
+
+        # 打印每个客户端的数据分布
+        total_samples = len(data_idxs)
+        class_counts = [tmp.get(i, 0) for i in range(num_classes)]
+        print(f"{client_id}\t\t{total_samples}\t\t" + "\t".join([str(count) for count in class_counts]))
+
     return client_class_counts
 
 
