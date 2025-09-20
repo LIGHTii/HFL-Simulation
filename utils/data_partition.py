@@ -70,7 +70,7 @@ def load_dataset(dataset_type, data_path):
     return X_train, y_train, X_test, y_test
 
 
-def partition_data_custom(dataset_type, num_clients, data_path, partition_method, noniid_param=0.4):
+def partition_data_custom(dataset_type, num_clients, data_path, partition_method, noniid_param=0.4, max_data_per_client=600):
     """
     自定义数据划分函数
     
@@ -112,33 +112,27 @@ def partition_data_custom(dataset_type, num_clients, data_path, partition_method
         idxs = np.random.permutation(n_train)
         batch_idxs = np.array_split(idxs, num_clients)
         client_data_mapping = {i: batch_idxs[i] for i in range(num_clients)}
-        
-    elif partition_method == "noniid-labeldir":
-        # Non-IID标签方向性分布（基于Dirichlet分布）
-        min_size = 0
-        min_require_size = 10
-        beta = noniid_param
-        
-        while min_size < min_require_size:
-            idx_batch = [[] for _ in range(num_clients)]
-            for k in range(num_classes):
-                idx_k = np.where(y_train == k)[0]
-                np.random.shuffle(idx_k)
-                proportions = np.random.dirichlet(np.repeat(beta, num_clients))
-                
-                # 平衡处理
-                proportions = np.array([p * (len(idx_j) < n_train / num_clients) 
-                                      for p, idx_j in zip(proportions, idx_batch)])
-                proportions = proportions / proportions.sum()
-                proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
-                
-                idx_batch = [idx_j + idx.tolist() for idx_j, idx in 
-                           zip(idx_batch, np.split(idx_k, proportions))]
-                min_size = min([len(idx_j) for idx_j in idx_batch])
-        
-        for j in range(num_clients):
-            np.random.shuffle(idx_batch[j])
-            client_data_mapping[j] = idx_batch[j]
+
+    if partition_method == "noniid-labeldir":
+        # 获取所有标签
+        labels = np.unique(y_train)
+        client_indices = [[] for _ in range(num_clients)]
+        # 按标签用Dirichlet分布分配给各客户端
+        for label in labels:
+            idx_label = np.where(y_train == label)[0]
+            np.random.shuffle(idx_label)
+            proportions = np.random.dirichlet([noniid_param] * num_clients)
+            # 按比例切片给各客户端
+            proportions = (np.cumsum(proportions) * len(idx_label)).astype(int)[:-1]
+            splits = np.split(idx_label, proportions)
+            for cid, split in enumerate(splits):
+                client_indices[cid].extend(split.tolist())
+        # 限制最大数据量，每个客户端均匀采样
+        for cid in range(num_clients):
+            if max_data_per_client is not None and len(client_indices[cid]) > max_data_per_client:
+                client_indices[cid] = random.sample(client_indices[cid], max_data_per_client)
+        # 保存分区结果
+        save_as_csv(client_indices, X_train, y_train, "noniid-labeldir")
     
     elif partition_method.startswith("noniid-#label") and len(partition_method) > 13:
         # 每个客户端包含指定数量的标签
