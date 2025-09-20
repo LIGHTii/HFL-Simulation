@@ -25,15 +25,14 @@ def distance(x1, x2):
 
 
 def getW(data, sigma):
-    """构建邻接矩阵 W，采用 RBF 高斯核计算相似度"""
+    """构建邻接矩阵 W，直接使用欧式距离"""
     n = len(data)
     W = np.zeros((n, n))
     for i in range(n):
         for j in range(n):
             if i != j:
-                W[i][j] = np.exp(-distance(data[i], data[j]) ** 2 / (2 * sigma ** 2))
+                W[i][j] = distance(data[i], data[j])
     return W
-
 
 def calculateGraphData(data, sigma):
     """
@@ -50,11 +49,11 @@ def calculateGraphData(data, sigma):
 def getEigen(L, cluster_num):
     """
     计算拉普拉斯矩阵的特征向量
-    取前 cluster_num 个最小特征值对应的特征向量
+    取前 cluster_num 个最大特征值对应的特征向量
     """
     eigval, eigvec = np.linalg.eig(L)
     idx = np.argsort(eigval.real)  # 按实部 从小到大排序
-    selected_idx = idx[:cluster_num]
+    selected_idx = idx[-cluster_num:]  # 改为取最大的 cluster_num 个特征值
     return eigvec[:, selected_idx].real
 
 
@@ -137,6 +136,7 @@ def cluster(data, sigma=0.4, epsilon=None, cluster_num=None):
         return cluster_num, labels
 
 
+# ==================================== ES聚类 ========================================
 def calculate_es_label_distributions(A, client_label_distributions):
     """
     计算每个ES的标签分布，通过汇总连接到该ES的所有客户端的标签分布

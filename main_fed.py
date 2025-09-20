@@ -19,6 +19,8 @@ from models.Update import LocalUpdate
 from models.Nets import MLP, CNNMnist, CNNCifar
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
+# 在文件顶部的导入部分添加
+from models.visual import visualize_client_label_distribution
 from models.cluster import (
     train_initial_models,
     aggregate_es_models, spectral_clustering_es,
@@ -176,6 +178,14 @@ if __name__ == '__main__':
     # 1. 训练初始本地模型
     w_locals, client_label_distributions = train_initial_models(
         args, dataset_train, dict_users, net_glob, num_users
+    )
+
+    # 新增：可视化客户端数据分布
+    visualize_client_label_distribution(
+        client_label_distributions=client_label_distributions,
+        dict_users=dict_users,
+        dataset_train=dataset_train,
+        save_path='./save/client_label_distribution.png'
     )
 
     # 2. 聚合ES模型 - 这里添加了 net_glob 参数
