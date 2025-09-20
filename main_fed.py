@@ -19,15 +19,13 @@ from models.Update import LocalUpdate
 from models.Nets import MLP, CNNMnist, CNNCifar
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
-# 在文件顶部的导入部分添加
-from models.visual import visualize_client_label_distribution
+
 from models.cluster import (
     train_initial_models,
     aggregate_es_models, spectral_clustering_es,
     visualize_es_clustering_result,
     calculate_es_label_distributions
 )
-
 
 
 def get_data(args):
@@ -94,6 +92,36 @@ def get_A(num_users, num_ESs):
         B[i, random_index] = 1
 
     return B'''
+
+
+def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distributions, num_EHs=None):
+    """
+    使用谱聚类生成 ES-EH 关联矩阵 B，并可视化聚类结果
+    """
+    print("开始谱聚类生成B矩阵...")
+
+    # 1. 聚合ES模型
+    es_models = aggregate_es_models(w_locals, A, dict_users, net_glob)
+
+    # 2. 使用谱聚类获取ES-EH关联矩阵B
+    B, cluster_labels = spectral_clustering_es(
+        es_models,
+        num_EHs=num_EHs,  # 可以指定或设置为None自动确定
+        sigma=args.sigma,  # 从参数中获取
+        epsilon=args.epsilon  # 从参数中获取
+    )
+
+    # 3. 计算每个ES的标签分布
+    es_label_distributions = calculate_es_label_distributions(A, client_label_distributions)
+
+    # 4. 可视化ES聚类结果
+    visualize_es_clustering_result(
+        es_label_distributions=es_label_distributions,
+        cluster_labels=cluster_labels,
+        save_path='./save/es_clustering_result.png'
+    )
+
+    return B  # 只返回B矩阵
 
 # ===== 根据 A、B 构造 C1 和 C2 =====
 def build_hierarchy(A, B):
@@ -180,33 +208,9 @@ if __name__ == '__main__':
         args, dataset_train, dict_users, net_glob, num_users
     )
 
-    # 新增：可视化客户端数据分布
-    visualize_client_label_distribution(
-        client_label_distributions=client_label_distributions,
-        dict_users=dict_users,
-        dataset_train=dataset_train,
-        save_path='./save/client_label_distribution.png'
-    )
-
-    # 2. 聚合ES模型 - 这里添加了 net_glob 参数
-    es_models = aggregate_es_models(w_locals, A, dict_users, net_glob)
-
-    # 3. 使用谱聚类获取ES-EH关联矩阵B
-    B, cluster_labels = spectral_clustering_es(
-        es_models,
-        num_EHs=num_EHs,  # 可以指定或设置为None自动确定
-        sigma=args.sigma,  # 从参数中获取
-        epsilon=args.epsilon  # 从参数中获取
-    )
-
-    # 4. 计算每个ES的标签分布
-    es_label_distributions = calculate_es_label_distributions(A, client_label_distributions)
-
-    # 5. 可视化ES聚类结果
-    visualize_es_clustering_result(
-        es_label_distributions=es_label_distributions,
-        cluster_labels=cluster_labels,
-        save_path='./save/es_clustering_result.png'
+    # 2. 使用谱聚类生成B矩阵
+    B = get_B_cluster(
+        args, w_locals, A, dict_users, net_glob, client_label_distributions, num_EHs
     )
 
     C1, C2 = build_hierarchy(A, B)
