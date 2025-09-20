@@ -12,7 +12,9 @@ import torch
 import torchvision.transforms as transforms
 import random
 from torchvision import datasets
-
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import numpy as np
 
 def mkdirs(dirpath):
     """创建目录"""
@@ -215,6 +217,8 @@ def record_data_statistics(y_train, client_data_mapping, num_classes):
         dict: 数据统计信息
     """
     client_class_counts = {}
+    plt.rcParams['font.family'] = ['DejaVu Sans', 'Arial', 'sans-serif']
+    plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
     print("\n各客户端数据分布统计:")
     print("客户端ID\t总样本数\t" + "\t".join([f"类别{i}" for i in range(num_classes)]))
@@ -227,7 +231,7 @@ def record_data_statistics(y_train, client_data_mapping, num_classes):
         # 打印每个客户端的数据分布
         total_samples = len(data_idxs)
         class_counts = [tmp.get(i, 0) for i in range(num_classes)]
-        print(f"{client_id}\t\t{total_samples}\t\t" + "\t".join([str(count) for count in class_counts]))
+        # print(f"{client_id}\t\t{total_samples}\t\t" + "\t".join([str(count) for count in class_counts]))
 
     return client_class_counts
 

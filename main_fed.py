@@ -95,7 +95,7 @@ def get_data(args):
     train_data, test_data, dict_users = get_data_new(
         dataset_type, args.num_users, data_path, partition_method, noniid_param
     )
-    visualize_client_data_distribution(dict_users, dataset_train, args)
+    # visualize_client_data_distribution(dict_users, dataset_train, args)
     return dataset_train, dataset_test, dict_users
 
 
@@ -461,7 +461,7 @@ if __name__ == '__main__':
             f'\nEpoch {epoch} [END OF EPOCH TEST] | HFL Acc: {acc_hfl:.2f}%, Loss: {loss_hfl:.4f} | SFL Acc: {acc_sfl:.2f}%, Loss: {loss_sfl:.4f}')
 
         # 检查是否达到停止条件
-        if acc_hfl >= 95.0:
+        if acc_hfl >= 97.0:
             print(f"HFL accuracy reached {acc_hfl:.2f}% at epoch {epoch}. Stopping training early.")
             early_stop = True
 
