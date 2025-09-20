@@ -46,7 +46,7 @@ def args_parser():
                         help="number of local epochs for initial model training")
     parser.add_argument('--partition', type=str, default='noniid-labeldir',
                        help="data partition method: homo, noniid-labeldir, noniid-#label1-9, iid-diff-quantity")
-    parser.add_argument('--beta', type=float, default=0.4,
+    parser.add_argument('--beta', type=float, default=0.1,
                        help="parameter for non-iid data distribution (Dirichlet)")
     parser.add_argument('--data_path', type=str, default='../data/',
                        help="path to save dataset")
