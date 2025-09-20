@@ -60,3 +60,4 @@ def FedAvg_layered(w,C):
             print(f"警告: 分组编号 {group_id} 超出预期范围，结果未被存储。")
 
     return grouped_w_avg
+

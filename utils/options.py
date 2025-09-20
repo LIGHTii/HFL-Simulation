@@ -37,5 +37,14 @@ def args_parser():
     parser.add_argument('--verbose', action='store_true', help='verbose print')
     parser.add_argument('--seed', type=int, default=1, help='random seed (default: 1)')
     parser.add_argument('--all_clients', action='store_true', help='aggregation over all clients')
+
+    # 添加谱聚类参数
+    parser.add_argument('--sigma', type=float, default=0.4,
+                        help="sigma parameter for spectral clustering")
+    parser.add_argument('--epsilon', type=float, default=None,
+                        help="epsilon threshold for spectral clustering")
+    parser.add_argument('--local_ep_init', type=int, default=1,
+                        help="number of local epochs for initial model training")
+
     args = parser.parse_args()
     return args
