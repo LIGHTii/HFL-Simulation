@@ -24,7 +24,12 @@ from models.Update import LocalUpdate
 from models.Nets import MLP, CNNMnist, CNNCifar
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
-
+from models.cluster import (
+    train_initial_models,
+    aggregate_es_models, spectral_clustering_es,
+    visualize_es_clustering_result,
+    calculate_es_label_distributions
+)
 
 def get_data_new(dataset_type, num_clients, data_path, partition_method='homo', noniid_param=0.4):
     """
@@ -127,7 +132,7 @@ def get_A(num_users, num_ESs):
     return A
 
 
-def get_B(num_ESs, num_EHs):
+'''def get_B(num_ESs, num_EHs):
     B = np.zeros((num_ESs, num_EHs), dtype=int)
 
     # 对每一行随机选择一个索引，将该位置设为 1
@@ -135,7 +140,37 @@ def get_B(num_ESs, num_EHs):
         random_index = np.random.randint(0, num_EHs)
         B[i, random_index] = 1
 
-    return B
+    return B'''
+
+
+def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distributions, num_EHs=None):
+    """
+    使用谱聚类生成 ES-EH 关联矩阵 B，并可视化聚类结果
+    """
+    print("开始谱聚类生成B矩阵...")
+
+    # 1. 聚合ES模型
+    es_models = aggregate_es_models(w_locals, A, dict_users, net_glob)
+
+    # 2. 使用谱聚类获取ES-EH关联矩阵B
+    B, cluster_labels = spectral_clustering_es(
+        es_models,
+        num_EHs=num_EHs,  # 可以指定或设置为None自动确定
+        sigma=args.sigma,  # 从参数中获取
+        epsilon=args.epsilon  # 从参数中获取
+    )
+
+    # 3. 计算每个ES的标签分布
+    es_label_distributions = calculate_es_label_distributions(A, client_label_distributions)
+
+    # 4. 可视化ES聚类结果
+    visualize_es_clustering_result(
+        es_label_distributions=es_label_distributions,
+        cluster_labels=cluster_labels,
+        save_path='./save/es_clustering_result.png'
+    )
+
+    return B  # 只返回B矩阵
 
 
 # ===== 根据 A、B 构造 C1 和 C2 =====
@@ -226,7 +261,19 @@ if __name__ == '__main__':
     num_processes = 8  # min(args.num_users//3, (os.cpu_count())//3)
 
     A = get_A(num_users, num_ESs)
-    B = get_B(num_ESs, num_EHs)
+
+    # 使用谱聚类生成B矩阵（替换原来的随机B矩阵）
+    print("开始初始训练和谱聚类...")
+
+    # 1. 训练初始本地模型
+    w_locals, client_label_distributions = train_initial_models(
+        args, dataset_train, dict_users, net_glob, num_users
+    )
+
+    # 2. 使用谱聚类生成B矩阵
+    B = get_B_cluster(
+        args, w_locals, A, dict_users, net_glob, client_label_distributions, num_EHs
+    )
 
     C1, C2 = build_hierarchy(A, B)
     print("C1 (一级->客户端):", C1)

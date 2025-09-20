@@ -70,3 +70,4 @@ def FedAvg_layered(w, C):
             grouped_w_avg[group_id] = w_avg
 
     return grouped_w_avg
+
