@@ -7,6 +7,12 @@ def visualize_client_data_distribution(dict_users, dataset_train, args):
     """可视化每个客户端的数据分布"""
     if not os.path.exists('./save'):
         os.makedirs('./save')
+        
+    # 设置使用英文字体，避免中文字体警告
+    plt.rcParams.update({
+        'font.family': 'DejaVu Sans',
+        'axes.unicode_minus': True  # 正确显示负号
+    })
 
     num_users = args.num_users
     num_classes = args.num_classes if hasattr(args, 'num_classes') else 10  # 默认为10类

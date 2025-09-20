@@ -6,8 +6,6 @@ import torch
 from sklearn.decomposition import PCA
 import copy
 from models.Update import LocalUpdate  # 导入LocalUpdate
-plt.rcParams['font.sans-serif'] = ['SimHei']  # 支持中文的黑体
-plt.rcParams['axes.unicode_minus'] = False  # 正常显示负号
 
 
 def model_to_vector(model_params):
@@ -174,6 +172,12 @@ def visualize_es_clustering_result(es_label_distributions, cluster_labels,
     """
     import matplotlib.pyplot as plt
     import numpy as np
+    
+    # 设置使用英文字体，避免中文字体警告
+    plt.rcParams.update({
+        'font.family': 'DejaVu Sans',
+        'axes.unicode_minus': True  # 正确显示负号
+    })
 
     # 获取唯一的聚类标签和数量
     unique_clusters = np.unique(cluster_labels)
