@@ -37,5 +37,13 @@ def args_parser():
     parser.add_argument('--verbose', action='store_true', help='verbose print')
     parser.add_argument('--seed', type=int, default=1, help='random seed (default: 1)')
     parser.add_argument('--all_clients', action='store_true', help='aggregation over all clients')
+
+    parser.add_argument('--partition', type=str, default='noniid-labeldir',
+                       help="data partition method: homo, noniid-labeldir, noniid-#label1-9, iid-diff-quantity")
+    parser.add_argument('--beta', type=float, default=0.4,
+                       help="parameter for non-iid data distribution (Dirichlet)")
+    parser.add_argument('--data_path', type=str, default='../data/',
+                       help="path to save dataset")
     args = parser.parse_args()
+
     return args

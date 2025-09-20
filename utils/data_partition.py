@@ -220,7 +220,7 @@ def record_data_statistics(y_train, client_data_mapping):
         tmp = {unq[i]: unq_cnt[i] for i in range(len(unq))}
         client_class_counts[client_id] = tmp
     
-    print('客户端数据分布统计:', client_class_counts)
+    # print('客户端数据分布统计:', client_class_counts)
     return client_class_counts
 
 

@@ -18,32 +18,79 @@ from datetime import datetime
 
 from utils.sampling import mnist_iid, mnist_noniid, cifar_iid
 from utils.options import args_parser
+from utils.data_partition import get_client_datasets
+from utils.visualize_client_data import visualize_client_data_distribution
 from models.Update import LocalUpdate
 from models.Nets import MLP, CNNMnist, CNNCifar
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
 
 
+def get_data_new(dataset_type, num_clients, data_path, partition_method='homo', noniid_param=0.4):
+    """
+    使用新的数据划分函数获取数据
+
+    Args:
+        dataset_type (str): 数据集类型 ('mnist', 'cifar10', 'cifar100')
+        num_clients (int): 客户端数量
+        data_path (str): 数据保存路径
+        partition_method (str): 数据分区方式
+        noniid_param (float): non-iid分布参数
+
+    Returns:
+        tuple: (训练数据集, 测试数据集, 客户端数据映射)
+    """
+
+    return get_client_datasets(dataset_type, num_clients, data_path, partition_method, noniid_param)
+
+
 def get_data(args):
+    """兼容原有接口的数据获取函数"""
+
+    # 确定数据集类型和路径
     if args.dataset == 'mnist':
+        dataset_type = 'mnist'
+        data_path = os.path.join(args.data_path, 'mnist/')
+        # 创建兼容的数据集对象
         trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        dataset_train = datasets.MNIST('../data/mnist/', train=True, download=True, transform=trans_mnist)
-        dataset_test = datasets.MNIST('../data/mnist/', train=False, download=True, transform=trans_mnist)
-        if args.iid:
-            dict_users = mnist_iid(dataset_train, args.num_users)
-        else:
-            dict_users = mnist_noniid(dataset_train, args.num_users)
+        dataset_train = datasets.MNIST(data_path, train=True, download=True, transform=trans_mnist)
+        dataset_test = datasets.MNIST(data_path, train=False, download=True, transform=trans_mnist)
+
     elif args.dataset == 'cifar':
+        dataset_type = 'cifar10'
+        data_path = os.path.join(args.data_path, 'cifar/')
+        # 创建兼容的数据集对象
         trans_cifar = transforms.Compose(
             [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-        dataset_train = datasets.CIFAR10('../data/cifar', train=True, download=True, transform=trans_cifar)
-        dataset_test = datasets.CIFAR10('../data/cifar', train=False, download=True, transform=trans_cifar)
-        if args.iid:
-            dict_users = cifar_iid(dataset_train, args.num_users)
-        else:
-            exit('Error: only consider IID setting in CIFAR10')
+        dataset_train = datasets.CIFAR10(data_path, train=True, download=True, transform=trans_cifar)
+        dataset_test = datasets.CIFAR10(data_path, train=False, download=True, transform=trans_cifar)
+
     else:
         exit('Error: unrecognized dataset')
+
+    # 确定分区方法 - 优先使用新的partition参数
+    if hasattr(args, 'partition'):
+        partition_method = args.partition
+        # 如果还设置了iid参数，覆盖partition设置
+        if hasattr(args, 'iid') and args.iid:
+            partition_method = 'homo'
+    else:
+        # 兼容旧版本参数
+        if hasattr(args, 'iid') and args.iid:
+            partition_method = 'homo'
+        else:
+            partition_method = 'noniid-labeldir'
+
+    # 确定non-iid参数
+    noniid_param = getattr(args, 'beta', 0.4)
+
+    print(f"使用数据划分方法: {partition_method}, non-iid参数: {noniid_param}")
+
+    # 使用新的数据划分方法获取客户端映射
+    train_data, test_data, dict_users = get_data_new(
+        dataset_type, args.num_users, data_path, partition_method, noniid_param
+    )
+    visualize_client_data_distribution(dict_users, dataset_train, args)
     return dataset_train, dataset_test, dict_users
 
 
