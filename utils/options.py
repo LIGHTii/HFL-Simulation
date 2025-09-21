@@ -7,7 +7,7 @@ import argparse
 def args_parser():
     parser = argparse.ArgumentParser()
     # federated arguments
-    parser.add_argument('--epochs', type=int, default=10, help="rounds of training")
+    parser.add_argument('--epochs', type=int, default=5, help="rounds of training")
     parser.add_argument('--num_users', type=int, default=50, help="number of users: K")
     parser.add_argument('--frac', type=float, default=1, help="the fraction of clients: C")##参与每轮训练的客户端比例
     parser.add_argument('--local_ep', type=int, default=10, help="the number of local epochs: E")
@@ -71,7 +71,7 @@ def args_parser():
                        help="number of ES layer aggregation rounds")
     parser.add_argument('--EH_k3', type=int, default=2,
                        help="number of EH layer aggregation rounds")
-    parser.add_argument('--num_processes', type=int, default=8,
+    parser.add_argument('--num_processes', type=int, default=5,
                        help="number of parallel processes for client training")
     
     args = parser.parse_args()

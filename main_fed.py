@@ -31,6 +31,9 @@ from utils.options import args_parser
 from utils.data_partition import get_client_datasets
 from utils.visualize_client_data import visualize_client_data_distribution
 from models.Update import LocalUpdate
+from utils.dual_evaluation import get_client_data_with_local_test, dual_evaluation, analyze_dual_evaluation_results
+from models.LocalUpdateEnhanced import create_enhanced_local_updates
+from utils.dual_evaluation_visualization import generate_dual_evaluation_report
 from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, VGG16, MobileNetCifar, LeNet5
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
@@ -170,42 +173,128 @@ def build_hierarchy(A, B):
     return C1, C2
 
 
-def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl_random, w_input_hfl_cluster, w_sfl_global, client_classes=None):
+def train_client(args, user_idx, dataset_train, dict_users_train, dict_users_test, w_input_hfl_random, w_input_hfl_cluster, w_sfl_global, client_classes=None):
     """
     单个客户端的训练函数，用于被多进程调用。
     现在支持三种模型：SFL、HFL(随机B矩阵)、HFL(聚类B矩阵)
+    在每次训练后立即进行本地测试
+    优化资源管理，避免文件描述符泄漏
 
     注意：为了兼容多进程，我们不直接传递大型模型对象，
     而是传递模型权重(state_dict)和模型架构信息(args)，在子进程中重新构建模型。
     """
-    # 在子进程中重新构建模型
-    local_net_hfl_random = build_model(args, dataset_train)
-    local_net_hfl_cluster = build_model(args, dataset_train)
-    local_net_sfl = build_model(args, dataset_train)
+    import torch
+    import gc
     
-    # 获取当前客户端的类别信息
-    user_classes = client_classes.get(user_idx, None) if client_classes else None
-    
-    # --- 训练HFL模型 (使用随机B矩阵) ---
-    local_random = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
-    local_net_hfl_random.load_state_dict(w_input_hfl_random)
-    w_hfl_random, loss_hfl_random = local_random.train(net=local_net_hfl_random.to(args.device))
-    
-    # --- 训练HFL模型 (使用聚类B矩阵) ---
-    local_cluster = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
-    local_net_hfl_cluster.load_state_dict(w_input_hfl_cluster)
-    w_hfl_cluster, loss_hfl_cluster = local_cluster.train(net=local_net_hfl_cluster.to(args.device))
-    
-    # --- 训练单层模型 (SFL) ---
-    local_sfl = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
-    local_net_sfl.load_state_dict(w_sfl_global)
-    w_sfl, loss_sfl = local_sfl.train(net=local_net_sfl.to(args.device))
+    try:
+        # 在子进程中重新构建模型
+        local_net_hfl_random = build_model(args, dataset_train)
+        local_net_hfl_cluster = build_model(args, dataset_train)
+        local_net_sfl = build_model(args, dataset_train)
+        
+        # 获取当前客户端的类别信息
+        user_classes = client_classes.get(user_idx, None) if client_classes else None
+        
+        # 获取客户端的训练和测试数据索引
+        train_idxs = dict_users_train[user_idx]
+        test_idxs = dict_users_test.get(user_idx, set())
+        
+        # 创建一次性本地测试函数，避免重复创建DataLoader
+        def quick_local_test(model, test_indices):
+            """简化的本地测试，减少资源占用"""
+            if len(test_indices) == 0:
+                return 0.0, float('inf')
+            
+            model.eval()
+            correct = 0
+            total_loss = 0.0
+            total_samples = 0
+            
+            # 直接遍历测试样本，避免DataLoader开销
+            with torch.no_grad():
+                test_indices_list = list(test_indices)
+                batch_size = min(32, len(test_indices_list))  # 小批量处理
+                
+                for i in range(0, len(test_indices_list), batch_size):
+                    batch_indices = test_indices_list[i:i+batch_size]
+                    batch_data = []
+                    batch_labels = []
+                    
+                    for idx in batch_indices:
+                        data, label = dataset_train[idx]
+                        batch_data.append(data)
+                        batch_labels.append(label)
+                    
+                    if batch_data:
+                        batch_data = torch.stack(batch_data).to(args.device)
+                        batch_labels = torch.tensor(batch_labels).to(args.device)
+                        
+                        outputs = model(batch_data)
+                        loss = torch.nn.functional.cross_entropy(outputs, batch_labels, reduction='sum')
+                        total_loss += loss.item()
+                        
+                        _, predicted = torch.max(outputs.data, 1)
+                        correct += (predicted == batch_labels).sum().item()
+                        total_samples += batch_labels.size(0)
+                        
+                        # 立即释放GPU内存
+                        del batch_data, batch_labels, outputs
+                        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            
+            accuracy = 100.0 * correct / total_samples if total_samples > 0 else 0.0
+            avg_loss = total_loss / total_samples if total_samples > 0 else float('inf')
+            
+            return accuracy, avg_loss
+        
+        # --- 训练HFL模型 (使用随机B矩阵) ---
+        local_random = LocalUpdate(args=args, dataset=dataset_train, idxs=train_idxs, user_classes=user_classes)
+        local_net_hfl_random.load_state_dict(w_input_hfl_random)
+        w_hfl_random, loss_hfl_random = local_random.train(net=local_net_hfl_random.to(args.device))
+        
+        # 训练后立即进行本地测试
+        local_acc_hfl_random, local_loss_test_hfl_random = quick_local_test(local_net_hfl_random, test_idxs)
+        
+        # --- 训练HFL模型 (使用聚类B矩阵) ---
+        local_cluster = LocalUpdate(args=args, dataset=dataset_train, idxs=train_idxs, user_classes=user_classes)
+        local_net_hfl_cluster.load_state_dict(w_input_hfl_cluster)
+        w_hfl_cluster, loss_hfl_cluster = local_cluster.train(net=local_net_hfl_cluster.to(args.device))
+        
+        # 训练后立即进行本地测试
+        local_acc_hfl_cluster, local_loss_test_hfl_cluster = quick_local_test(local_net_hfl_cluster, test_idxs)
+        
+        # --- 训练单层模型 (SFL) ---
+        local_sfl = LocalUpdate(args=args, dataset=dataset_train, idxs=train_idxs, user_classes=user_classes)
+        local_net_sfl.load_state_dict(w_sfl_global)
+        w_sfl, loss_sfl = local_sfl.train(net=local_net_sfl.to(args.device))
+        
+        # 训练后立即进行本地测试
+        local_acc_sfl, local_loss_test_sfl = quick_local_test(local_net_sfl, test_idxs)
 
-    # 返回结果，包括 user_idx 以便后续排序
-    return (user_idx, 
-            copy.deepcopy(w_hfl_random), loss_hfl_random,
-            copy.deepcopy(w_hfl_cluster), loss_hfl_cluster, 
-            copy.deepcopy(w_sfl), loss_sfl)
+        # 确保返回的权重是CPU张量，避免CUDA张量传递问题
+        w_hfl_random_cpu = {k: v.cpu() for k, v in w_hfl_random.items()}
+        w_hfl_cluster_cpu = {k: v.cpu() for k, v in w_hfl_cluster.items()}
+        w_sfl_cpu = {k: v.cpu() for k, v in w_sfl.items()}
+        
+        # 清理GPU内存
+        del local_net_hfl_random, local_net_hfl_cluster, local_net_sfl
+        del local_random, local_cluster, local_sfl
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        gc.collect()
+
+        # 返回结果，包括 user_idx 以便后续排序
+        # 现在还包括本地测试结果
+        return (user_idx, 
+                w_hfl_random_cpu, loss_hfl_random, local_acc_hfl_random, local_loss_test_hfl_random,
+                w_hfl_cluster_cpu, loss_hfl_cluster, local_acc_hfl_cluster, local_loss_test_hfl_cluster, 
+                w_sfl_cpu, loss_sfl, local_acc_sfl, local_loss_test_sfl)
+                
+    except Exception as e:
+        print(f"客户端 {user_idx} 训练出错: {e}")
+        # 返回默认值避免程序崩溃
+        return (user_idx, 
+                {}, 0.0, 0.0, float('inf'),
+                {}, 0.0, 0.0, float('inf'), 
+                {}, 0.0, 0.0, float('inf'))
 
 def save_results_to_csv(results, filename):
     """Save results to CSV file for three models"""
@@ -217,13 +306,78 @@ def save_results_to_csv(results, filename):
         for result in results:
             writer.writerow(result)
 
+
+def save_dual_evaluation_to_csv(dual_eval_history, filename):
+    """Save dual evaluation results to CSV file"""
+    if not dual_eval_history:
+        return
+        
+    with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = [
+            'epoch', 'model_type',
+            'global_accuracy', 'global_loss',
+            'local_mean_accuracy', 'local_std_accuracy',
+            'local_mean_loss', 'local_std_loss',
+            'accuracy_gap', 'loss_gap',
+            'local_variance_acc', 'local_variance_loss'
+        ]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        for result in dual_eval_history:
+            epoch = result['epoch']
+            
+            for model_name in result['global_performance'].keys():
+                # 全局性能
+                global_perf = result['global_performance'][model_name]
+                # 本地性能
+                local_perf = result['local_performance'].get(model_name, {})
+                # 性能对比
+                comparison = result['performance_comparison'].get(model_name, {})
+                
+                row = {
+                    'epoch': epoch,
+                    'model_type': model_name,
+                    'global_accuracy': global_perf['accuracy'],
+                    'global_loss': global_perf['loss'],
+                    'local_mean_accuracy': local_perf.get('mean_accuracy', 0),
+                    'local_std_accuracy': local_perf.get('std_accuracy', 0),
+                    'local_mean_loss': local_perf.get('mean_loss', 0),
+                    'local_std_loss': local_perf.get('std_loss', 0),
+                    'accuracy_gap': comparison.get('accuracy_gap', 0),
+                    'loss_gap': comparison.get('loss_gap', 0),
+                    'local_variance_acc': comparison.get('local_variance_acc', 0),
+                    'local_variance_loss': comparison.get('local_variance_loss', 0)
+                }
+                writer.writerow(row)
+
+
+def save_immediate_local_test_to_csv(immediate_results, filename):
+    """Save immediate local test results to CSV file"""
+    with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = ['epoch', 'round', 'client_id', 'model_type', 'local_accuracy', 'local_loss']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        for result in immediate_results:
+            writer.writerow(result)
+
 if __name__ == '__main__':
     mp.set_start_method('spawn', force=True)
     # parse args
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
 
-    dataset_train, dataset_test, dict_users, client_classes = get_data(args)
+    # 使用双重评估数据架构
+    dataset_train, dataset_test, dict_users_train, dict_users_test, client_classes = get_client_data_with_local_test(args)
+    
+    # 创建增强版本地更新器（支持本地测试）
+    enhanced_local_updates = create_enhanced_local_updates(
+        args, dataset_train, dict_users_train, dict_users_test, client_classes
+    )
+
+    # 保持向后兼容，dict_users 指向训练数据索引
+    dict_users = dict_users_train
 
     # 打印 FedRS 配置信息
     if args.method == 'fedrs':
@@ -310,13 +464,17 @@ if __name__ == '__main__':
 
     # 生成唯一的时间戳用于文件名，包含重要参数
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    param_str = f"e{args.epochs}_u{args.num_users}_le{args.local_ep}_{args.dataset}_{args.model}_k2{args.ES_k2}_k3{args.EH_k3}_p{args.num_processes}"
+    param_str = f"dual_eval_e{args.epochs}_u{args.num_users}_le{args.local_ep}_{args.dataset}_{args.model}_k2{args.ES_k2}_k3{args.EH_k3}_p{args.num_processes}"
     if not args.iid:
         param_str += f"_beta{args.beta}"
     csv_filename = f'./results/training_results_{param_str}_{timestamp}.csv'
+    dual_eval_filename = f'./results/dual_evaluation_{param_str}_{timestamp}.csv'
+    immediate_local_test_filename = f'./results/immediate_local_test_{param_str}_{timestamp}.csv'
 
-    # 初始化结果记录列表 - 新格式支持三种模型
+    # 初始化结果记录列表 - 支持双重评估
     results_history = []
+    dual_eval_history = []
+    immediate_local_test_results = []
 
     # 训练前测试初始模型
     print("\n--- Testing Initial Global Models ---")
@@ -418,7 +576,7 @@ if __name__ == '__main__':
                 tasks = []
                 for user_idx in range(num_users):
                     task_args = (
-                        args, user_idx, dataset_train, dict_users,
+                        args, user_idx, dataset_train, dict_users_train, dict_users_test,
                         w_locals_input_hfl_random[user_idx], w_locals_input_hfl_cluster[user_idx], 
                         w_glob_sfl, client_classes
                     )
@@ -431,15 +589,82 @@ if __name__ == '__main__':
                     results = pool.starmap(train_client, tqdm(tasks, desc=f"Epoch {epoch}|{t3 + 1}|{t2 + 1} Training Clients"))
 
                 print("训练结束")
-                # 收集并整理所有客户端的训练结果
+                # 收集并整理所有客户端的训练结果（现在包括本地测试结果）
+                # 初始化本地测试结果收集器
+                local_test_results_hfl_random = []
+                local_test_results_hfl_cluster = []
+                local_test_results_sfl = []
+                
                 for result in results:
-                    u_idx, w_hr, l_hr, w_hc, l_hc, w_s, l_s = result
+                    u_idx, w_hr, l_hr, acc_hr, loss_test_hr, w_hc, l_hc, acc_hc, loss_test_hc, w_s, l_s, acc_s, loss_test_s = result
+                    
+                    # 收集权重和训练损失（原有逻辑）
                     w_locals_output_hfl_random[u_idx] = w_hr
                     loss_locals_hfl_random.append(l_hr)
                     w_locals_output_hfl_cluster[u_idx] = w_hc
                     loss_locals_hfl_cluster.append(l_hc)
                     w_locals_output_sfl[u_idx] = w_s
                     loss_locals_sfl.append(l_s)
+                    
+                    # 收集本地测试结果（新增逻辑）
+                    local_test_results_hfl_random.append({
+                        'client_id': u_idx,
+                        'accuracy': acc_hr,
+                        'loss': loss_test_hr
+                    })
+                    local_test_results_hfl_cluster.append({
+                        'client_id': u_idx,
+                        'accuracy': acc_hc,
+                        'loss': loss_test_hc
+                    })
+                    local_test_results_sfl.append({
+                        'client_id': u_idx,
+                        'accuracy': acc_s,
+                        'loss': loss_test_s
+                    })
+                    
+                    # 保存到即时本地测试结果（用于详细分析）
+                    immediate_local_test_results.extend([
+                        {
+                            'epoch': epoch,
+                            'round': f"{t3+1}|{t2+1}",
+                            'client_id': u_idx,
+                            'model_type': 'HFL_Random_B',
+                            'local_accuracy': acc_hr,
+                            'local_loss': loss_test_hr
+                        },
+                        {
+                            'epoch': epoch,
+                            'round': f"{t3+1}|{t2+1}",
+                            'client_id': u_idx,
+                            'model_type': 'HFL_Cluster_B',
+                            'local_accuracy': acc_hc,
+                            'local_loss': loss_test_hc
+                        },
+                        {
+                            'epoch': epoch,
+                            'round': f"{t3+1}|{t2+1}",
+                            'client_id': u_idx,
+                            'model_type': 'SFL',
+                            'local_accuracy': acc_s,
+                            'local_loss': loss_test_s
+                        }
+                    ])
+                
+                # 立即显示本地测试统计
+                print(f"[本地测试] 轮次 {epoch}|{t3 + 1}|{t2 + 1} 客户端本地测试结果:")
+                
+                for model_name, results_list in [
+                    ("HFL_Random_B", local_test_results_hfl_random),
+                    ("HFL_Cluster_B", local_test_results_hfl_cluster), 
+                    ("SFL", local_test_results_sfl)
+                ]:
+                    if results_list:
+                        accs = [r['accuracy'] for r in results_list if r['accuracy'] > 0]
+                        if accs:
+                            mean_acc = np.mean(accs)
+                            std_acc = np.std(accs)
+                            print(f"  {model_name}: 本地平均准确率 {mean_acc:.2f}±{std_acc:.2f}% ({len(accs)}个客户端)")
                 
                 print("排序结束")
                 print(f"[Parallel Training] All {args.num_users} clients have finished training.")
@@ -481,20 +706,47 @@ if __name__ == '__main__':
         net_glob_hfl_cluster.eval()
         net_glob_sfl.eval()
 
-        # 评估 HFL 随机B模型
-        acc_hfl_random, loss_hfl_random = test_img(net_glob_hfl_random, dataset_test, args)
+        # --- 双重评估系统 ---
+        print(f"\n=== 轮次 {epoch} 双重评估开始 ===")
+        
+        # 准备模型字典
+        models_dict = {
+            'HFL_Random_B': net_glob_hfl_random,
+            'HFL_Cluster_B': net_glob_hfl_cluster,
+            'SFL': net_glob_sfl
+        }
+        
+        # 执行双重评估
+        dual_eval_result = dual_evaluation(
+            epoch=epoch,
+            models_dict=models_dict,
+            full_dataset=dataset_train,
+            global_test=dataset_test,
+            dict_users_local_test=dict_users_test,
+            args=args,
+            verbose=True
+        )
+        
+        # 保存双重评估结果
+        dual_eval_history.append(dual_eval_result)
+        
+        # 从双重评估结果中提取传统指标（保持向后兼容）
+        acc_hfl_random = dual_eval_result['global_performance']['HFL_Random_B']['accuracy']
+        loss_hfl_random = dual_eval_result['global_performance']['HFL_Random_B']['loss']
         acc_test_hfl_random.append(acc_hfl_random)
         loss_test_hfl_random.append(loss_hfl_random)
 
-        # 评估 HFL 聚类B模型
-        acc_hfl_cluster, loss_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_test, args)
+        acc_hfl_cluster = dual_eval_result['global_performance']['HFL_Cluster_B']['accuracy']
+        loss_hfl_cluster = dual_eval_result['global_performance']['HFL_Cluster_B']['loss']
         acc_test_hfl_cluster.append(acc_hfl_cluster)
         loss_test_hfl_cluster.append(loss_hfl_cluster)
 
-        # 评估 SFL 模型
-        acc_sfl, loss_sfl = test_img(net_glob_sfl, dataset_test, args)
+        acc_sfl = dual_eval_result['global_performance']['SFL']['accuracy']
+        loss_sfl = dual_eval_result['global_performance']['SFL']['loss']
         acc_test_sfl.append(acc_sfl)
         loss_test_sfl.append(loss_sfl)
+        
+        print(f"=== 轮次 {epoch} 双重评估完成 ===\n")
 
         # 记录当前epoch的结果 - 新格式
         current_epoch_results = [
@@ -525,12 +777,26 @@ if __name__ == '__main__':
 
         # 保存结果到CSV
         save_results_to_csv(results_history, csv_filename)
+        
+        # 保存双重评估结果到CSV
+        save_dual_evaluation_to_csv(dual_eval_history, dual_eval_filename)
 
         # 打印当前 EPOCH 结束时的测试结果
         print(f'\nEpoch {epoch} [END OF EPOCH TEST]')
-        print(f'HFL_Random: Acc {acc_hfl_random:.2f}%, Loss {loss_hfl_random:.4f}')
-        print(f'HFL_Cluster: Acc {acc_hfl_cluster:.2f}%, Loss {loss_hfl_cluster:.4f}')
-        print(f'SFL: Acc {acc_sfl:.2f}%, Loss {loss_sfl:.4f}')
+        print(f'HFL_Random: 全局Acc {acc_hfl_random:.2f}%, Loss {loss_hfl_random:.4f}')
+        print(f'HFL_Cluster: 全局Acc {acc_hfl_cluster:.2f}%, Loss {loss_hfl_cluster:.4f}')
+        print(f'SFL: 全局Acc {acc_sfl:.2f}%, Loss {loss_sfl:.4f}')
+        
+        # 显示本地平均性能
+        if 'local_performance' in dual_eval_result:
+            print("本地平均性能:")
+            for model_name in ['HFL_Random_B', 'HFL_Cluster_B', 'SFL']:
+                if model_name in dual_eval_result['local_performance']:
+                    local_perf = dual_eval_result['local_performance'][model_name]
+                    mean_acc = local_perf.get('mean_accuracy', 0)
+                    std_acc = local_perf.get('std_accuracy', 0)
+                    print(f'  {model_name}: 本地Acc {mean_acc:.2f}±{std_acc:.2f}%')
+        print()
 
         net_glob_hfl_random.train()  # 切换回训练模式
         net_glob_hfl_cluster.train()  # 切换回训练模式
@@ -596,6 +862,23 @@ if __name__ == '__main__':
 
     print(f"\n=== 训练完成 ===")
     print(f"所有结果已保存到: {csv_filename}")
+    print(f"双重评估结果已保存到: {dual_eval_filename}")
+    
+    # 保存即时本地测试结果
+    try:
+        save_immediate_local_test_to_csv(immediate_local_test_results, immediate_local_test_filename)
+        print(f"即时本地测试结果已保存到: {immediate_local_test_filename}")
+    except Exception as e:
+        print(f"保存即时本地测试结果失败: {e}")
+    
+    # 生成双重评估可视化报告
+    try:
+        print("\n正在生成双重评估报告...")
+        generate_dual_evaluation_report(dual_eval_history, './save/', timestamp)
+    except Exception as e:
+        print(f"双重评估报告生成失败: {e}")
+        import traceback
+        traceback.print_exc()
     
     try:
         print("\n正在生成可视化图表...")
