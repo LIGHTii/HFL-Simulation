@@ -295,7 +295,7 @@ def get_client_datasets(dataset_type, num_clients, data_path, partition_method, 
         noniid_param (float): non-iid分布参数
     
     Returns:
-        tuple: (训练数据集, 测试数据集, 客户端数据映射)
+        tuple: (训练数据集, 测试数据集, 客户端数据映射, 客户端类别映射)
     """
     
     # 确保数据路径存在
@@ -310,7 +310,16 @@ def get_client_datasets(dataset_type, num_clients, data_path, partition_method, 
     train_data = {'data': X_train, 'labels': y_train}
     test_data = {'data': X_test, 'labels': y_test}
     
-    return train_data, test_data, client_mapping
+    # 生成客户端类别映射
+    client_classes = {}
+    for client_id, data_indices in client_mapping.items():
+        # 获取该客户端的所有标签
+        client_labels = y_train[data_indices]
+        # 获取唯一的类别
+        unique_classes = np.unique(client_labels).tolist()
+        client_classes[client_id] = unique_classes
+    
+    return train_data, test_data, client_mapping, client_classes
 
 
 if __name__ == "__main__":
@@ -321,7 +330,7 @@ if __name__ == "__main__":
     partition_method = "noniid-labeldir"
     noniid_param = 0.1
     
-    train_data, test_data, client_mapping = get_client_datasets(
+    train_data, test_data, client_mapping, client_classes = get_client_datasets(
         dataset_type, num_clients, data_path, partition_method, noniid_param
     )
     
@@ -329,6 +338,8 @@ if __name__ == "__main__":
     print(f"测试数据形状: {test_data['data'].shape}")
     print(f"客户端数量: {len(client_mapping)}")
     
-    # 打印每个客户端的数据数量
-    for client_id, data_indices in client_mapping.items():
-        print(f"客户端 {client_id}: {len(data_indices)} 个样本")
+    # 打印每个客户端的数据数量和类别信息
+    for client_id in range(min(5, num_clients)):  # 只打印前5个客户端
+        data_indices = client_mapping[client_id]
+        classes = client_classes[client_id]
+        print(f"客户端 {client_id}: {len(data_indices)} 个样本, 类别: {classes}")
