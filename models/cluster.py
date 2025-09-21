@@ -3,12 +3,8 @@ import numpy as np
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 import torch
-from sklearn.decomposition import PCA
 import copy
 from models.Update import LocalUpdate  # 导入LocalUpdate
-plt.rcParams['font.sans-serif'] = ['SimHei']  # 支持中文的黑体
-plt.rcParams['axes.unicode_minus'] = False  # 正常显示负号
-
 
 def model_to_vector(model_params):
     """将模型参数字典转换为向量"""
@@ -24,48 +20,46 @@ def distance(x1, x2):
     return np.sqrt(np.sum((x1 - x2) ** 2))
 
 
-def getW(data, sigma):
-    """构建邻接矩阵 W，直接使用欧式距离"""
+def get_dist_matrix(data):
+    """获取距离矩阵"""
     n = len(data)
-    W = np.zeros((n, n))
+    dist_matrix = np.zeros((n, n))
     for i in range(n):
-        for j in range(n):
-            if i != j:
-                W[i][j] = distance(data[i], data[j])
-    return W
+        for j in range(i + 1, n):
+            dist_matrix[i][j] = dist_matrix[j][i] = distance(data[i], data[j])
+    return dist_matrix
 
-def calculateGraphData(data, sigma):
-    """
-    计算图的相似度矩阵 W 和归一化拉普拉斯矩阵 L_sym
-    L_sym = D^{-1/2} (D - W) D^{-1/2}
-    """
-    W = getW(data, sigma)
-    D = np.diag(np.sum(W, axis=1))
-    D_sqrt = np.diag(1.0 / np.sqrt(np.diag(D)))
-    L_sym = D_sqrt @ (D - W) @ D_sqrt
-    return W, L_sym
+def getW(data):
+    """获得对称的权重矩阵 (这里直接用距离矩阵)"""
+    return get_dist_matrix(data)
 
 
-def getEigen(L, cluster_num):
+def getEigen(W, cluster_num):
     """
-    计算拉普拉斯矩阵的特征向量
-    取前 cluster_num 个最大特征值对应的特征向量
+    获得距离矩阵 W 的前 cluster_num 个最小特征值对应的特征向量
     """
-    eigval, eigvec = np.linalg.eig(L)
+    eigval, eigvec = np.linalg.eig(W)
     idx = np.argsort(eigval.real)  # 按实部 从小到大排序
-    selected_idx = idx[-cluster_num:]  # 改为取最大的 cluster_num 个特征值
+    selected_idx = idx[:cluster_num]  # 改为取最小的 cluster_num 个特征值
     return eigvec[:, selected_idx].real
 
 
-def spectralPartitionGraph(L_sym, cluster_num):
-    """使用谱聚类对图进行划分"""
-    # 计算特征向量
-    eigvec = getEigen(L_sym, cluster_num)
-    # 标准化（避免长度差异影响）
-    eigvec_normalized = eigvec / (np.linalg.norm(eigvec, axis=1, keepdims=True) + 1e-12)
-    # 用 KMeans 在特征空间中聚类
+def spectralPartitionGraph(W, cluster_num):
+    """
+    使用距离矩阵 W 进行谱聚类
+    """
+    # 获取特征向量
+    eigvec = getEigen(W, cluster_num)
+
+    # 标准化特征向量
+    norms = np.linalg.norm(eigvec, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    eigvec_normalized = eigvec / norms
+
+    # KMeans 聚类
     kmeans = KMeans(n_clusters=cluster_num, n_init=10, random_state=42)
     labels = kmeans.fit_predict(eigvec_normalized)
+
     return labels
 
 
@@ -80,60 +74,71 @@ def calculate_intra_cluster_distance(data, labels, cluster_num):
     return total_distance
 
 
-def find_optimal_clusters_binary_search(data, sigma=0.4, epsilon=None):
+def find_optimal_clusters_binary_search(data, epsilon=None, max_clusters=None):
     """
-    使用二分搜索选择最优簇数
-    目标：找到最小的簇数，使簇内距离和 <= epsilon
+    使用二分搜索找到满足簇内距离和小于 epsilon 的最小簇数
     """
     n = len(data)
-    W, L_sym = calculateGraphData(data, sigma)
+    if max_clusters is None:
+        max_clusters = n
 
-    # 全局方差（作为阈值的基准）
+    # 计算距离矩阵
+    W = getW(data)
+
+    # 全局方差作为参考
     global_centroid = np.mean(data, axis=0)
     global_variance = np.sum((data - global_centroid) ** 2)
 
     if epsilon is None:
-        # 如果用户没指定，默认阈值 = 全局方差的 2%
-        epsilon = 0.02 * global_variance
-        print(f"[谱聚类] 自动阈值 ε = {epsilon:.4f}")
+        epsilon = 0.6 * global_variance
+        print(f"使用自动计算的 epsilon 阈值: {epsilon:.4f}")
 
-    min_clusters, max_clusters = 1, n
-    best_clusters, best_labels = n, None
+    min_clusters = 1
+    best_clusters = max_clusters
+    best_labels = None
+    search_history = []
 
-    # 二分搜索过程
     while min_clusters <= max_clusters:
-        mid = (min_clusters + max_clusters) // 2
-        labels = spectralPartitionGraph(L_sym, mid)
-        intra_distance = calculate_intra_cluster_distance(data, labels, mid)
-        print(f"[谱聚类] 尝试簇数: {mid}, 簇内距离和: {intra_distance:.4f}, 阈值: {epsilon:.4f}")
+        mid_clusters = (min_clusters + max_clusters) // 2
+        labels = spectralPartitionGraph(W, mid_clusters)
+        intra_distance = calculate_intra_cluster_distance(data, labels, mid_clusters)
+
+        search_history.append((mid_clusters, intra_distance))
+        print(f"簇数: {mid_clusters}, 簇内距离和: {intra_distance:.4f}, 阈值: {epsilon:.4f}")
 
         if intra_distance <= epsilon:
-            best_clusters, best_labels = mid, labels
-            max_clusters = mid - 1  # 尝试更少的簇
+            best_clusters, best_labels = mid_clusters, labels
+            max_clusters = mid_clusters - 1
         else:
-            min_clusters = mid + 1  # 需要更多的簇
+            min_clusters = mid_clusters + 1
 
-    # 如果没有满足条件的，兜底用最大簇数
     if best_labels is None:
-        best_clusters = n
-        best_labels = spectralPartitionGraph(L_sym, best_clusters)
-        print(f"[谱聚类] 未找到满足条件的簇数，使用最大簇数: {best_clusters}")
+        best_clusters = max_clusters
+        best_labels = spectralPartitionGraph(W, best_clusters)
+        print(f"未找到满足条件的簇数，使用最大簇数: {best_clusters}")
+
+    if search_history:
+        clusters, distances = zip(*search_history)
+        plt.figure(figsize=(10, 6))
+        plt.plot(clusters, distances, 'bo-', label='簇内距离和')
+        plt.axhline(y=epsilon, color='r', linestyle='--', label='阈值')
+        plt.xlabel('簇数')
+        plt.ylabel('簇内距离和')
+        plt.title('二分搜索过程')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
 
     return best_clusters, best_labels
 
 
-def cluster(data, sigma=0.4, epsilon=None, cluster_num=None):
+def cluster(data, epsilon=None):
     """
     谱聚类入口函数
-    - 如果 cluster_num=None，则自动选择最优簇数
-    - 否则使用指定的簇数
+    自动选择最优簇数
     """
-    if cluster_num is None:
-        return find_optimal_clusters_binary_search(data, sigma, epsilon)
-    else:
-        W, L_sym = calculateGraphData(data, sigma)
-        labels = spectralPartitionGraph(L_sym, cluster_num)
-        return cluster_num, labels
+    cluster_num, labels = find_optimal_clusters_binary_search(data, epsilon=epsilon)
+    return cluster_num, labels
 
 
 # ==================================== ES聚类 ========================================
@@ -161,7 +166,7 @@ def calculate_es_label_distributions(A, client_label_distributions):
 
     return es_label_distributions
 
-
+'''
 def visualize_es_clustering_result(es_label_distributions, cluster_labels,
                                    save_path='./save/es_clustering_result.png'):
     """
@@ -172,9 +177,6 @@ def visualize_es_clustering_result(es_label_distributions, cluster_labels,
         cluster_labels: ES聚类标签列表
         save_path: 保存路径
     """
-    import matplotlib.pyplot as plt
-    import numpy as np
-
     # 获取唯一的聚类标签和数量
     unique_clusters = np.unique(cluster_labels)
     n_clusters = len(unique_clusters)
@@ -182,7 +184,7 @@ def visualize_es_clustering_result(es_label_distributions, cluster_labels,
     # 创建图形
     fig, ax = plt.subplots(figsize=(16, 8))
 
-    # 对ES按照聚类结果排序
+    # 按聚类结果排序
     sorted_indices = np.argsort(cluster_labels)
     sorted_labels = cluster_labels[sorted_indices]
     sorted_distributions = es_label_distributions[sorted_indices]
@@ -199,12 +201,13 @@ def visualize_es_clustering_result(es_label_distributions, cluster_labels,
     x = np.arange(len(sorted_distributions))
     bottom = np.zeros(len(sorted_distributions))
 
-    # 定义标签颜色
-    label_colors = plt.cm.Set3(np.linspace(0, 1, 10))
+    # 定义单色渐变颜色（蓝色系，10个标签）
+    cmap = plt.cm.Blues
+    label_colors = cmap(np.linspace(0.3, 1, 10))  # 从浅到深取 10 种颜色
 
-    for i in range(10):  # 0-9共10个标签
+    for i in range(10):  # 0-9 共10个标签
         values = sorted_distributions[:, i]
-        ax.bar(x, values, bottom=bottom, color=label_colors[i], label=f'Label {i}', alpha=0.8)
+        ax.bar(x, values, bottom=bottom, color=label_colors[i], label=f'Label {i}', alpha=0.9)
         bottom += values
 
     # 添加聚类分界线
@@ -212,7 +215,7 @@ def visualize_es_clustering_result(es_label_distributions, cluster_labels,
         if boundary[1] < len(x) - 1:  # 不是最后一个ES
             ax.axvline(x=boundary[1] + 0.5, color='black', linestyle='--', linewidth=2)
 
-    # 设置x轴标签为聚类ID
+    # 设置x轴为聚类ID
     cluster_centers = [(boundary[0] + boundary[1]) / 2 for boundary in cluster_boundaries]
     ax.set_xticks(cluster_centers)
     ax.set_xticklabels([f'Cluster {i}' for i in unique_clusters])
@@ -227,7 +230,146 @@ def visualize_es_clustering_result(es_label_distributions, cluster_labels,
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"[谱聚类] ES聚类结果已保存到: {save_path}")
+'''
 
+
+def visualize_clustering_comparison(es_label_distributions, cluster_labels,
+                                    save_path='./save/clustering_comparison.png'):
+    """
+    对比谱聚类分簇和随机分簇的效果，使用完全渐变的柱状图
+
+    参数:
+        es_label_distributions: 每个ES的标签分布，形状为(n_es, 10)的数组
+        cluster_labels: ES聚类标签列表
+        save_path: 保存路径
+    """
+    n_es = len(es_label_distributions)
+    n_clusters = len(np.unique(cluster_labels))
+
+    # 随机分簇，每个 ES 随机分到 0~n_clusters-1 的簇
+    np.random.seed()  # 可去掉固定随机种子，每次生成不同随机结果
+    random_cluster_labels = np.random.randint(0, n_clusters, size=n_es)
+
+    # 创建图形，包含两个子图
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+    fig.suptitle('Comparison of Spectral Clustering vs Random Clustering', fontsize=16)
+
+    # 使用jet颜色映射
+    cmap = plt.cm.viridis
+
+    # 绘制谱聚类结果（左侧子图）
+    _plot_continuous_gradient_clustering_result(
+        ax1, es_label_distributions, cluster_labels,
+        "Spectral Clustering Result", cmap
+    )
+
+    # 绘制随机分簇结果（右侧子图）
+    _plot_continuous_gradient_clustering_result(
+        ax2, es_label_distributions, random_cluster_labels,
+        "Random Clustering Result", cmap
+    )
+
+    # 添加传统图例（水平颜色条和标签）
+    legend_elements = []
+    for i in range(10):
+        color = cmap(i / 9.0)
+        legend_elements.append(plt.Rectangle((0, 0), 1, 1, fc=color, label=f'Label {i}'))
+
+    fig.legend(handles=legend_elements,
+               loc='lower center',
+               bbox_to_anchor=(0.5, 0.02),
+               ncol=10,
+               frameon=False)
+
+    # 调整布局并保存
+    plt.tight_layout(rect=[0, 0.05, 1, 0.95])  # 为图例留出空间
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"聚类对比可视化已保存到: {save_path}")
+
+
+def _plot_continuous_gradient_clustering_result(ax, distributions, labels, title, cmap):
+    """
+    辅助函数：在指定的轴上绘制完全渐变的柱状图
+
+    参数:
+        ax: matplotlib轴对象
+        distributions: 标签分布数据
+        labels: 聚类标签
+        title: 子图标题
+        cmap: 颜色映射
+    """
+    # 获取唯一的聚类标签和数量
+    unique_clusters = np.unique(labels)
+
+    # 按聚类结果排序
+    sorted_indices = np.argsort(labels)
+    sorted_labels = labels[sorted_indices]
+    sorted_distributions = distributions[sorted_indices]
+
+    # 计算每个聚类的起始位置
+    cluster_boundaries = []
+    start_idx = 0
+    for cluster_id in unique_clusters:
+        cluster_size = np.sum(sorted_labels == cluster_id)
+        cluster_boundaries.append((start_idx, start_idx + cluster_size - 1))
+        start_idx += cluster_size
+
+    # 创建完全渐变的柱状图
+    x = []
+    gap = 1  # 簇之间的额外间距，可以自己调大
+    current_x = 0
+    for cluster_id in unique_clusters:
+        indices = np.where(sorted_labels == cluster_id)[0]
+        for _ in indices:
+            x.append(current_x)
+            current_x += 1  # 同簇内部柱子间距保持1
+        current_x += gap  # 簇之间增加间距
+    x = np.array(x)
+
+    # 计算每个ES的总样本数
+    total_samples = np.sum(sorted_distributions, axis=1)
+
+    # 为每个ES创建渐变颜色
+    for i, (x_pos, es_dist) in enumerate(zip(x, sorted_distributions)):
+        # 计算每个标签在ES中的累积比例
+        cum_proportions = np.cumsum(es_dist) / total_samples[i]
+
+        # 为每个ES创建渐变颜色条
+        for j in range(100):  # 将每个柱状图分成100个小段
+            start_frac = j / 100.0
+            end_frac = (j + 1) / 100.0
+
+            # 找到这个分段对应的标签
+            label_idx = np.searchsorted(cum_proportions, start_frac)
+            if label_idx >= len(cum_proportions):
+                label_idx = len(cum_proportions) - 1
+
+            # 计算颜色
+            color = cmap(label_idx / 9.0)
+
+            # 计算这个分段的高度
+            height = total_samples[i] / 100.0
+
+            # 绘制这个分段
+            ax.bar(x_pos, height, bottom=start_frac * total_samples[i],
+                   color=color, width=0.8, alpha=0.9, edgecolor=None)
+
+    # 设置x轴为聚类ID，改成根据新的 x 坐标计算簇中心
+    cluster_centers = []
+    for boundary in cluster_boundaries:
+        left_idx = boundary[0]
+        right_idx = boundary[1]
+        center = (x[left_idx] + x[right_idx]) / 2  # 使用新的 x 坐标
+        cluster_centers.append(center)
+
+    ax.set_xticks(cluster_centers)
+    ax.set_xticklabels([f'Cluster {i}' for i in unique_clusters])
+
+    ax.set_title(title)
+    ax.set_xlabel('Edge Server Cluster')
+    ax.set_ylabel('Number of Samples')
+    ax.grid(True, linestyle='--', alpha=0.7, axis='y')
 
 def FedAvg_weighted(models, sizes=None):
     """
@@ -256,9 +398,7 @@ def FedAvg_weighted(models, sizes=None):
 
 
 def train_initial_models(args, dataset_train, dict_users, net_glob, num_users):
-    """
-    训练初始本地模型，用于构建ES相似度图
-    """
+    """训练初始本地模型，用于构建ES相似度图 """
     w_locals = []
     client_label_distributions = []  # 存储每个客户端的标签分布
 
@@ -320,20 +460,18 @@ def aggregate_es_models(w_locals, A, dict_users, net_glob):
             w_es = FedAvg_weighted(client_models, client_sizes)
             es_models[es_idx] = w_es
         else:
-            # 如果ES没有连接任何客户端，使用全局模型初始化
-            es_models[es_idx] = copy.deepcopy(net_glob.state_dict())
+            # 如果ES没有连接任何客户端，设为None
+            es_models[es_idx] = None #copy.deepcopy(net_glob.state_dict())
 
     return es_models
 
 
-def spectral_clustering_es(es_models, num_EHs=None, sigma=0.4, epsilon=None):
+def spectral_clustering_es(es_models, epsilon=None):
     """
     对边缘服务器模型进行谱聚类
 
     参数:
         es_models: 边缘服务器模型列表
-        num_EHs: 期望的聚类数量，如果为None则自动确定
-        sigma: 高斯核参数
         epsilon: 簇内距离阈值
 
     返回:
@@ -353,13 +491,8 @@ def spectral_clustering_es(es_models, num_EHs=None, sigma=0.4, epsilon=None):
     print(f"[谱聚类] 模型向量矩阵形状: {model_vectors.shape}")
 
     # 进行谱聚类
-    if num_EHs is None:
-        cluster_num, cluster_labels = cluster(model_vectors, sigma=sigma, epsilon=epsilon)
-        print(f"[谱聚类] 自动确定的最佳簇数: {cluster_num}")
-    else:
-        cluster_num, cluster_labels = cluster(model_vectors, cluster_num=num_EHs, sigma=sigma, epsilon=epsilon)
-        print(f"[谱聚类] 使用指定的簇数: {cluster_num}")
-
+    cluster_num, cluster_labels = cluster(model_vectors, epsilon=epsilon)
+    print(f"[谱聚类] 自动确定的最佳簇数: {cluster_num}")
 
     # 构建B矩阵
     num_ESs = len(es_models)

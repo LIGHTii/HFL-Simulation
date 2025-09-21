@@ -114,33 +114,84 @@ def partition_data_custom(dataset_type, num_clients, data_path, partition_method
         idxs = np.random.permutation(n_train)
         batch_idxs = np.array_split(idxs, num_clients)
         client_data_mapping = {i: batch_idxs[i] for i in range(num_clients)}
-        
+
     elif partition_method == "noniid-labeldir":
-        # Non-IID标签方向性分布（基于Dirichlet分布）
-        min_size = 0
-        min_require_size = 10
+        # Non-IID标签方向性分布（基于Dirichlet分布）- 每个客户端数据量相等，标签分布不均
+        samples_per_client = 600# n_train // num_clients
         beta = noniid_param
-        
-        while min_size < min_require_size:
-            idx_batch = [[] for _ in range(num_clients)]
-            for k in range(num_classes):
-                idx_k = np.where(y_train == k)[0]
-                np.random.shuffle(idx_k)
-                proportions = np.random.dirichlet(np.repeat(beta, num_clients))
-                
-                # 平衡处理
-                proportions = np.array([p * (len(idx_j) < n_train / num_clients) 
-                                      for p, idx_j in zip(proportions, idx_batch)])
-                proportions = proportions / proportions.sum()
-                proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
-                
-                idx_batch = [idx_j + idx.tolist() for idx_j, idx in 
-                           zip(idx_batch, np.split(idx_k, proportions))]
-                min_size = min([len(idx_j) for idx_j in idx_batch])
-        
+
+        # 初始化每个客户端的数据索引列表
+        idx_batch = [[] for _ in range(num_clients)]
+
+        # 为每个类别生成Dirichlet分布的比例
+        for k in range(num_classes):
+            idx_k = np.where(y_train == k)[0]
+            np.random.shuffle(idx_k)
+
+            # 生成Dirichlet分布的客户端比例
+            proportions = np.random.dirichlet(np.repeat(beta, num_clients))
+
+            # 根据比例分配每个类别的样本到不同客户端
+            proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
+            class_splits = np.split(idx_k, proportions)
+
+            for i, split in enumerate(class_splits):
+                idx_batch[i].extend(split.tolist())
+
+        # 确保每个客户端的数据量完全相等
         for j in range(num_clients):
             np.random.shuffle(idx_batch[j])
-            client_data_mapping[j] = idx_batch[j]
+            current_size = len(idx_batch[j])
+
+            if current_size > samples_per_client:
+                # 如果数据过多，随机移除多余数据
+                excess_data = idx_batch[j][samples_per_client:]
+                idx_batch[j] = idx_batch[j][:samples_per_client]
+
+                # 将多余数据重新分配给数据不足的客户端
+                for k in range(num_clients):
+                    if len(idx_batch[k]) < samples_per_client and len(excess_data) > 0:
+                        needed = samples_per_client - len(idx_batch[k])
+                        take = min(needed, len(excess_data))
+                        idx_batch[k].extend(excess_data[:take])
+                        excess_data = excess_data[take:]
+
+            elif current_size < samples_per_client:
+                # 如果数据不足，从其他客户端借用数据
+                needed = samples_per_client - current_size
+                for k in range(num_clients):
+                    if len(idx_batch[k]) > samples_per_client and needed > 0:
+                        excess = len(idx_batch[k]) - samples_per_client
+                        take = min(needed, excess)
+                        idx_batch[j].extend(idx_batch[k][-take:])
+                        idx_batch[k] = idx_batch[k][:-take]
+                        needed -= take
+
+        # 最终确保所有客户端数据量完全相等
+        total_assigned = sum(len(batch) for batch in idx_batch)
+        remaining_data = list(set(range(n_train)) - set(idx for batch in idx_batch for idx in batch))
+
+        # 分配剩余数据
+        for i, remaining_idx in enumerate(remaining_data):
+            client_idx = i % num_clients
+            if len(idx_batch[client_idx]) < samples_per_client:
+                idx_batch[client_idx].append(remaining_idx)
+
+        # 最终平衡：确保每个客户端恰好有samples_per_client个样本
+        for j in range(num_clients):
+            current_size = len(idx_batch[j])
+            if current_size != samples_per_client:
+                if current_size > samples_per_client:
+                    # 移除多余样本
+                    idx_batch[j] = idx_batch[j][:samples_per_client]
+                else:
+                    # 这种情况在正确实现下不应该发生
+                    print(f"警告：客户端 {j} 数据量不足: {current_size}/{samples_per_client}")
+
+        # 最终打乱每个客户端的数据并转换为numpy数组
+        for j in range(num_clients):
+            np.random.shuffle(idx_batch[j])
+            client_data_mapping[j] = np.array(idx_batch[j])
     
     elif partition_method.startswith("noniid-#label") and len(partition_method) > 13:
         # 每个客户端包含指定数量的标签
@@ -248,7 +299,7 @@ def get_client_datasets(dataset_type, num_clients, data_path, partition_method, 
         noniid_param (float): non-iid分布参数
     
     Returns:
-        tuple: (训练数据集, 测试数据集, 客户端数据映射)
+        tuple: (训练数据集, 测试数据集, 客户端数据映射, 客户端类别映射)
     """
     
     # 确保数据路径存在
@@ -263,7 +314,16 @@ def get_client_datasets(dataset_type, num_clients, data_path, partition_method, 
     train_data = {'data': X_train, 'labels': y_train}
     test_data = {'data': X_test, 'labels': y_test}
     
-    return train_data, test_data, client_mapping
+    # 生成客户端类别映射
+    client_classes = {}
+    for client_id, data_indices in client_mapping.items():
+        # 获取该客户端的所有标签
+        client_labels = y_train[data_indices]
+        # 获取唯一的类别
+        unique_classes = np.unique(client_labels).tolist()
+        client_classes[client_id] = unique_classes
+    
+    return train_data, test_data, client_mapping, client_classes
 
 
 if __name__ == "__main__":
@@ -274,7 +334,7 @@ if __name__ == "__main__":
     partition_method = "noniid-labeldir"
     noniid_param = 0.1
     
-    train_data, test_data, client_mapping = get_client_datasets(
+    train_data, test_data, client_mapping, client_classes = get_client_datasets(
         dataset_type, num_clients, data_path, partition_method, noniid_param
     )
     
@@ -282,6 +342,8 @@ if __name__ == "__main__":
     print(f"测试数据形状: {test_data['data'].shape}")
     print(f"客户端数量: {len(client_mapping)}")
     
-    # 打印每个客户端的数据数量
-    for client_id, data_indices in client_mapping.items():
-        print(f"客户端 {client_id}: {len(data_indices)} 个样本")
+    # 打印每个客户端的数据数量和类别信息
+    for client_id in range(min(5, num_clients)):  # 只打印前5个客户端
+        data_indices = client_mapping[client_id]
+        classes = client_classes[client_id]
+        print(f"客户端 {client_id}: {len(data_indices)} 个样本, 类别: {classes}")
