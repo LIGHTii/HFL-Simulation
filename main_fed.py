@@ -18,8 +18,10 @@ import numpy as np
 from torchvision import datasets, transforms
 import torch
 from tqdm import tqdm
-import multiprocessing
+import torch.multiprocessing as mp
 import os
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import csv
 from datetime import datetime
 import pandas as pd
@@ -29,15 +31,15 @@ from utils.options import args_parser
 from utils.data_partition import get_client_datasets
 from utils.visualize_client_data import visualize_client_data_distribution
 from models.Update import LocalUpdate
-from models.Nets import MLP, CNNMnist, CNNCifar
+from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, VGG16, MobileNetCifar, LeNet5
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
 from models.cluster import (
     train_initial_models,
     aggregate_es_models, spectral_clustering_es,
     calculate_es_label_distributions,
-    visualize_es_clustering_result,
-    calculate_es_label_distributions
+    visualize_clustering_comparison
+    #visualize_es_clustering_result,
 )
 import numpy as np
 import random
@@ -56,12 +58,32 @@ def build_model(args, dataset_train):
         for x in img_size:
             len_in *= x
         net_glob = MLP(dim_in=len_in, dim_hidden=200, dim_out=args.num_classes).to(args.device)
+
+    # ======================= 新 =======================
+    elif args.model == 'lr' and args.dataset == 'mnist':
+        len_in = 1
+        for x in img_size:
+            len_in *= x
+        net_glob = LR(dim_in=len_in, dim_out=args.num_classes).to(args.device)
+
+    elif args.model == 'lenet5' and args.dataset == 'mnist':
+        net_glob = LeNet5(args=args).to(args.device)
+
+    elif args.model == 'vgg11' and args.dataset == 'cifar':
+        net_glob = VGG11(args=args).to(args.device)
+
+    elif args.model == 'vgg16' and args.dataset == 'cifar':
+        net_glob = VGG16(args=args).to(args.device)
+
+    elif args.model == 'resnet18' and args.dataset == 'cifar':
+        net_glob = ResNet18(args=args).to(args.device)
+
     else:
         exit('错误：无法识别的模型')
 
-    print("--- 模型架构 ---")
-    print(net_glob)
-    print("--------------------")
+    # print("--- 模型架构 ---")
+    # print(net_glob)
+    # print("--------------------")
     return net_glob
 
 
@@ -116,7 +138,13 @@ def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distribu
 
     # 3. 计算ES的标签分布并可视化
     es_label_distributions = calculate_es_label_distributions(A, client_label_distributions)
-    visualize_es_clustering_result(es_label_distributions, cluster_labels)
+    #visualize_es_clustering_result(es_label_distributions, cluster_labels)
+    # 在完成谱聚类后添加对比可视化
+    visualize_clustering_comparison(
+        es_label_distributions=es_label_distributions,
+        cluster_labels=cluster_labels,
+        save_path='./save/clustering_comparison.png'
+    )
 
     return B
 
@@ -151,25 +179,9 @@ def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl_random, 
     而是传递模型权重(state_dict)和模型架构信息(args)，在子进程中重新构建模型。
     """
     # 在子进程中重新构建模型
-    # 这种方式可以避免在进程间传递复杂的、不可序列化的对象
-    if args.model == 'cnn' and args.dataset == 'cifar':
-        local_net_hfl_random = CNNCifar(args=args)
-        local_net_hfl_cluster = CNNCifar(args=args)
-        local_net_sfl = CNNCifar(args=args)
-    elif args.model == 'cnn' and args.dataset == 'mnist':
-        local_net_hfl_random = CNNMnist(args=args)
-        local_net_hfl_cluster = CNNMnist(args=args)
-        local_net_sfl = CNNMnist(args=args)
-    elif args.model == 'mlp':
-        img_size = [1, 28, 28] if args.dataset == 'mnist' else [3, 32, 32]
-        len_in = 1
-        for x in img_size:
-            len_in *= x
-        local_net_hfl_random = MLP(dim_in=len_in, dim_hidden=200, dim_out=args.num_classes)
-        local_net_hfl_cluster = MLP(dim_in=len_in, dim_hidden=200, dim_out=args.num_classes)
-        local_net_sfl = MLP(dim_in=len_in, dim_hidden=200, dim_out=args.num_classes)
-    else:
-        exit('Error: unrecognized model in train_client')
+    local_net_hfl_random = build_model(args, dataset_train)
+    local_net_hfl_cluster = build_model(args, dataset_train)
+    local_net_sfl = build_model(args, dataset_train)
     
     # 获取当前客户端的类别信息
     user_classes = client_classes.get(user_idx, None) if client_classes else None
@@ -206,7 +218,7 @@ def save_results_to_csv(results, filename):
             writer.writerow(result)
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn', force=True)
+    mp.set_start_method('spawn', force=True)
     # parse args
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
@@ -414,9 +426,9 @@ if __name__ == '__main__':
                 print("成功创建多线程！")
 
                 # 创建进程池并分发任务
-                with multiprocessing.Pool(processes=num_processes) as pool:
-                    results = pool.starmap(train_client,
-                                           tqdm(tasks, desc=f"Epoch {epoch}|{t3 + 1}|{t2 + 1} Training Clients"))
+                # 使用 with 语句可以自动管理进程池的关闭
+                with mp.Pool(processes=num_processes) as pool:
+                    results = pool.starmap(train_client, tqdm(tasks, desc=f"Epoch {epoch}|{t3 + 1}|{t2 + 1} Training Clients"))
 
                 print("训练结束")
                 # 收集并整理所有客户端的训练结果

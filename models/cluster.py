@@ -166,7 +166,7 @@ def calculate_es_label_distributions(A, client_label_distributions):
 
     return es_label_distributions
 
-
+'''
 def visualize_es_clustering_result(es_label_distributions, cluster_labels,
                                    save_path='./save/es_clustering_result.png'):
     """
@@ -230,7 +230,146 @@ def visualize_es_clustering_result(es_label_distributions, cluster_labels,
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"[谱聚类] ES聚类结果已保存到: {save_path}")
+'''
 
+
+def visualize_clustering_comparison(es_label_distributions, cluster_labels,
+                                    save_path='./save/clustering_comparison.png'):
+    """
+    对比谱聚类分簇和随机分簇的效果，使用完全渐变的柱状图
+
+    参数:
+        es_label_distributions: 每个ES的标签分布，形状为(n_es, 10)的数组
+        cluster_labels: ES聚类标签列表
+        save_path: 保存路径
+    """
+    n_es = len(es_label_distributions)
+    n_clusters = len(np.unique(cluster_labels))
+
+    # 随机分簇，每个 ES 随机分到 0~n_clusters-1 的簇
+    np.random.seed()  # 可去掉固定随机种子，每次生成不同随机结果
+    random_cluster_labels = np.random.randint(0, n_clusters, size=n_es)
+
+    # 创建图形，包含两个子图
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+    fig.suptitle('Comparison of Spectral Clustering vs Random Clustering', fontsize=16)
+
+    # 使用jet颜色映射
+    cmap = plt.cm.viridis
+
+    # 绘制谱聚类结果（左侧子图）
+    _plot_continuous_gradient_clustering_result(
+        ax1, es_label_distributions, cluster_labels,
+        "Spectral Clustering Result", cmap
+    )
+
+    # 绘制随机分簇结果（右侧子图）
+    _plot_continuous_gradient_clustering_result(
+        ax2, es_label_distributions, random_cluster_labels,
+        "Random Clustering Result", cmap
+    )
+
+    # 添加传统图例（水平颜色条和标签）
+    legend_elements = []
+    for i in range(10):
+        color = cmap(i / 9.0)
+        legend_elements.append(plt.Rectangle((0, 0), 1, 1, fc=color, label=f'Label {i}'))
+
+    fig.legend(handles=legend_elements,
+               loc='lower center',
+               bbox_to_anchor=(0.5, 0.02),
+               ncol=10,
+               frameon=False)
+
+    # 调整布局并保存
+    plt.tight_layout(rect=[0, 0.05, 1, 0.95])  # 为图例留出空间
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"聚类对比可视化已保存到: {save_path}")
+
+
+def _plot_continuous_gradient_clustering_result(ax, distributions, labels, title, cmap):
+    """
+    辅助函数：在指定的轴上绘制完全渐变的柱状图
+
+    参数:
+        ax: matplotlib轴对象
+        distributions: 标签分布数据
+        labels: 聚类标签
+        title: 子图标题
+        cmap: 颜色映射
+    """
+    # 获取唯一的聚类标签和数量
+    unique_clusters = np.unique(labels)
+
+    # 按聚类结果排序
+    sorted_indices = np.argsort(labels)
+    sorted_labels = labels[sorted_indices]
+    sorted_distributions = distributions[sorted_indices]
+
+    # 计算每个聚类的起始位置
+    cluster_boundaries = []
+    start_idx = 0
+    for cluster_id in unique_clusters:
+        cluster_size = np.sum(sorted_labels == cluster_id)
+        cluster_boundaries.append((start_idx, start_idx + cluster_size - 1))
+        start_idx += cluster_size
+
+    # 创建完全渐变的柱状图
+    x = []
+    gap = 1  # 簇之间的额外间距，可以自己调大
+    current_x = 0
+    for cluster_id in unique_clusters:
+        indices = np.where(sorted_labels == cluster_id)[0]
+        for _ in indices:
+            x.append(current_x)
+            current_x += 1  # 同簇内部柱子间距保持1
+        current_x += gap  # 簇之间增加间距
+    x = np.array(x)
+
+    # 计算每个ES的总样本数
+    total_samples = np.sum(sorted_distributions, axis=1)
+
+    # 为每个ES创建渐变颜色
+    for i, (x_pos, es_dist) in enumerate(zip(x, sorted_distributions)):
+        # 计算每个标签在ES中的累积比例
+        cum_proportions = np.cumsum(es_dist) / total_samples[i]
+
+        # 为每个ES创建渐变颜色条
+        for j in range(100):  # 将每个柱状图分成100个小段
+            start_frac = j / 100.0
+            end_frac = (j + 1) / 100.0
+
+            # 找到这个分段对应的标签
+            label_idx = np.searchsorted(cum_proportions, start_frac)
+            if label_idx >= len(cum_proportions):
+                label_idx = len(cum_proportions) - 1
+
+            # 计算颜色
+            color = cmap(label_idx / 9.0)
+
+            # 计算这个分段的高度
+            height = total_samples[i] / 100.0
+
+            # 绘制这个分段
+            ax.bar(x_pos, height, bottom=start_frac * total_samples[i],
+                   color=color, width=0.8, alpha=0.9, edgecolor=None)
+
+    # 设置x轴为聚类ID，改成根据新的 x 坐标计算簇中心
+    cluster_centers = []
+    for boundary in cluster_boundaries:
+        left_idx = boundary[0]
+        right_idx = boundary[1]
+        center = (x[left_idx] + x[right_idx]) / 2  # 使用新的 x 坐标
+        cluster_centers.append(center)
+
+    ax.set_xticks(cluster_centers)
+    ax.set_xticklabels([f'Cluster {i}' for i in unique_clusters])
+
+    ax.set_title(title)
+    ax.set_xlabel('Edge Server Cluster')
+    ax.set_ylabel('Number of Samples')
+    ax.grid(True, linestyle='--', alpha=0.7, axis='y')
 
 def FedAvg_weighted(models, sizes=None):
     """
@@ -259,9 +398,7 @@ def FedAvg_weighted(models, sizes=None):
 
 
 def train_initial_models(args, dataset_train, dict_users, net_glob, num_users):
-    """
-    训练初始本地模型，用于构建ES相似度图
-    """
+    """训练初始本地模型，用于构建ES相似度图 """
     w_locals = []
     client_label_distributions = []  # 存储每个客户端的标签分布
 
