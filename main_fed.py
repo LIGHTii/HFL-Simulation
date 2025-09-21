@@ -16,8 +16,10 @@ import numpy as np
 from torchvision import datasets, transforms
 import torch
 from tqdm import tqdm
-import multiprocessing
+import torch.multiprocessing as mp
 import os
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import csv
 from datetime import datetime
 
@@ -26,7 +28,7 @@ from utils.options import args_parser
 from utils.data_partition import get_client_datasets
 from utils.visualize_client_data import visualize_client_data_distribution
 from models.Update import LocalUpdate
-from models.Nets import MLP, CNNMnist, CNNCifar
+from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, VGG16, MobileNetCifar, LeNet5
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
 from models.cluster import (
@@ -140,12 +142,32 @@ def build_model(args, dataset_train):
         for x in img_size:
             len_in *= x
         net_glob = MLP(dim_in=len_in, dim_hidden=200, dim_out=args.num_classes).to(args.device)
+
+    # ======================= 新 =======================
+    elif args.model == 'lr' and args.dataset == 'mnist':
+        len_in = 1
+        for x in img_size:
+            len_in *= x
+        net_glob = LR(dim_in=len_in, dim_out=args.num_classes).to(args.device)
+
+    elif args.model == 'lenet5' and args.dataset == 'mnist':
+        net_glob = LeNet5(args=args).to(args.device)
+
+    elif args.model == 'vgg11' and args.dataset == 'cifar':
+        net_glob = VGG11(args=args).to(args.device)
+
+    elif args.model == 'vgg16' and args.dataset == 'cifar':
+        net_glob = VGG16(args=args).to(args.device)
+
+    elif args.model == 'resnet18' and args.dataset == 'cifar':
+        net_glob = ResNet18(args=args).to(args.device)
+
     else:
         exit('错误：无法识别的模型')
 
-    print("--- 模型架构 ---")
-    print(net_glob)
-    print("--------------------")
+    # print("--- 模型架构 ---")
+    # print(net_glob)
+    # print("--------------------")
     return net_glob
 
 
@@ -242,7 +264,7 @@ def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl, w_sfl_g
     # 在子进程中重新构建模型
     # 这种方式可以避免在进程间传递复杂的、不可序列化的对象
     # print(f"CLIENT_{user_idx} START")
-    if args.model == 'cnn' and args.dataset == 'cifar':
+    '''if args.model == 'cnn' and args.dataset == 'cifar':
         local_net_hfl = CNNCifar(args=args)
         local_net_sfl = CNNCifar(args=args)
     elif args.model == 'cnn' and args.dataset == 'mnist':
@@ -251,13 +273,23 @@ def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl, w_sfl_g
     # 你可以根据需要添加 MLP 等其他模型的构建逻辑
     else:
         # 退出或抛出错误
-        exit('Error: unrecognized model in train_client')
+        exit('Error: unrecognized model in train_client')'''
+
+    # 在子进程中重新构建模型（复用 build_model）
+    local_net_hfl = build_model(args, dataset_train)
+    local_net_sfl = build_model(args, dataset_train)
+
+    # 加载全局权重
+    local_net_hfl.load_state_dict(w_input_hfl)
+    local_net_sfl.load_state_dict(w_sfl_global)
+
     # print(f"CLIENT_{user_idx} TRAIN")
     # --- 训练分层模型 (HFL) ---
     local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx])
     local_net_hfl.load_state_dict(w_input_hfl)
     w_hfl, loss_hfl = local.train(net=local_net_hfl.to(args.device))
     # print(f"CLIENT_{user_idx} TRAINing")
+
     # --- 训练单层模型 (SFL) ---
     local_net_sfl.load_state_dict(w_sfl_global)
     w_sfl, loss_sfl = local.train(net=local_net_sfl.to(args.device))
@@ -277,7 +309,7 @@ def save_results_to_csv(results, filename):
             writer.writerow(result)
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn', force=True)
+    mp.set_start_method('spawn', force=True)
     # parse args
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
@@ -420,14 +452,13 @@ if __name__ == '__main__':
 
                 # 创建进程池并分发任务
                 # 使用 with 语句可以自动管理进程池的关闭
-                with multiprocessing.Pool(processes=num_processes) as pool:
+                with mp.Pool(processes=num_processes) as pool:
                     # ===================== 主要修改点 =====================
                     # 使用 tqdm 包装 tasks 列表，以在多进程训练期间显示进度条。
                     # desc 参数为进度条提供一个描述性标签。
                     # 随着每个客户端训练任务的完成，进度条会自动更新。
                     # ====================================================
-                    results = pool.starmap(train_client,
-                                           tqdm(tasks, desc=f"Epoch {epoch}|{t3 + 1}|{t2 + 1} Training Clients"))
+                    results = pool.starmap(train_client, tasks)
 
                 print("训练结束")
                 # 3. 收集并整理所有客户端的训练结果
