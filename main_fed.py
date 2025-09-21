@@ -33,7 +33,8 @@ from models.cluster import (
     train_initial_models,
     aggregate_es_models, spectral_clustering_es,
     calculate_es_label_distributions,
-    visualize_es_clustering_result,
+    visualize_clustering_comparison
+    #visualize_es_clustering_result,
 )
 '''
 def get_data_new(dataset_type, num_clients, data_path, partition_method='homo', noniid_param=0.4):
@@ -199,7 +200,13 @@ def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distribu
 
     # 3. 计算ES的标签分布并可视化
     es_label_distributions = calculate_es_label_distributions(A, client_label_distributions)
-    visualize_es_clustering_result(es_label_distributions, cluster_labels)
+    #visualize_es_clustering_result(es_label_distributions, cluster_labels)
+    # 在完成谱聚类后添加对比可视化
+    visualize_clustering_comparison(
+        es_label_distributions=es_label_distributions,
+        cluster_labels=cluster_labels,
+        save_path='./save/clustering_comparison.png'
+    )
 
     return B
 
