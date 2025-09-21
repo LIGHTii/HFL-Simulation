@@ -66,6 +66,14 @@ def args_parser():
     parser.add_argument('--use_sampling', action='store_true',
                        help="use sampling.py data partitioning instead of data_partition.py")
     
+    # Hierarchical FL parameters
+    parser.add_argument('--k2', type=int, default=2,
+                       help="number of ES layer aggregation rounds")
+    parser.add_argument('--k3', type=int, default=2,
+                       help="number of EH layer aggregation rounds")
+    parser.add_argument('--num_processes', type=int, default=8,
+                       help="number of parallel processes for client training")
+    
     args = parser.parse_args()
 
     return args

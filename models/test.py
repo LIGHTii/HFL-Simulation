@@ -17,7 +17,8 @@ def test_img(net_g, datatest, args):
     l = len(data_loader)
     for idx, (data, target) in enumerate(data_loader):
         if args.gpu != -1:
-            data, target = data.cuda(), target.cuda()
+            # 确保数据和模型在同一个设备上
+            data, target = data.to(args.device), target.to(args.device)
         log_probs = net_g(data)
         # sum up batch loss
         test_loss += F.cross_entropy(log_probs, target, reduction='sum').item()
