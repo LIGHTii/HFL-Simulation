@@ -3,10 +3,8 @@ import numpy as np
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 import torch
-from sklearn.decomposition import PCA
 import copy
 from models.Update import LocalUpdate  # 导入LocalUpdate
-
 
 def model_to_vector(model_params):
     """将模型参数字典转换为向量"""
@@ -42,7 +40,7 @@ def getEigen(W, cluster_num):
     """
     eigval, eigvec = np.linalg.eig(W)
     idx = np.argsort(eigval.real)  # 按实部 从小到大排序
-    selected_idx = idx[:cluster_num]  # 改为取最大的 cluster_num 个特征值
+    selected_idx = idx[:cluster_num]  # 改为取最小的 cluster_num 个特征值
     return eigvec[:, selected_idx].real
 
 
@@ -92,7 +90,7 @@ def find_optimal_clusters_binary_search(data, epsilon=None, max_clusters=None):
     global_variance = np.sum((data - global_centroid) ** 2)
 
     if epsilon is None:
-        epsilon = 0.02 * global_variance
+        epsilon = 0.6 * global_variance
         print(f"使用自动计算的 epsilon 阈值: {epsilon:.4f}")
 
     min_clusters = 1
@@ -134,20 +132,13 @@ def find_optimal_clusters_binary_search(data, epsilon=None, max_clusters=None):
     return best_clusters, best_labels
 
 
-
-def cluster(data, sigma=0.4, epsilon=None, cluster_num=None):
+def cluster(data, epsilon=None):
     """
     谱聚类入口函数
-    - 如果 cluster_num=None，则自动选择最优簇数
-    - 否则使用指定的簇数
+    自动选择最优簇数
     """
-    if cluster_num is None:
-        cluster_num, labels = find_optimal_clusters_binary_search(data, epsilon=epsilon)
-        return cluster_num, labels
-    else:
-        W = getW(data)
-        labels = spectralPartitionGraph(W, cluster_num)
-        return cluster_num, labels
+    cluster_num, labels = find_optimal_clusters_binary_search(data, epsilon=epsilon)
+    return cluster_num, labels
 
 
 # ==================================== ES聚类 ========================================
@@ -186,15 +177,6 @@ def visualize_es_clustering_result(es_label_distributions, cluster_labels,
         cluster_labels: ES聚类标签列表
         save_path: 保存路径
     """
-    import matplotlib.pyplot as plt
-    import numpy as np
-    
-    # 设置使用英文字体，避免中文字体警告
-    plt.rcParams.update({
-        'font.family': 'DejaVu Sans',
-        'axes.unicode_minus': True  # 正确显示负号
-    })
-
     # 获取唯一的聚类标签和数量
     unique_clusters = np.unique(cluster_labels)
     n_clusters = len(unique_clusters)
@@ -202,7 +184,7 @@ def visualize_es_clustering_result(es_label_distributions, cluster_labels,
     # 创建图形
     fig, ax = plt.subplots(figsize=(16, 8))
 
-    # 对ES按照聚类结果排序
+    # 按聚类结果排序
     sorted_indices = np.argsort(cluster_labels)
     sorted_labels = cluster_labels[sorted_indices]
     sorted_distributions = es_label_distributions[sorted_indices]
@@ -219,12 +201,13 @@ def visualize_es_clustering_result(es_label_distributions, cluster_labels,
     x = np.arange(len(sorted_distributions))
     bottom = np.zeros(len(sorted_distributions))
 
-    # 定义标签颜色
-    label_colors = plt.cm.Set3(np.linspace(0, 1, 10))
+    # 定义单色渐变颜色（蓝色系，10个标签）
+    cmap = plt.cm.Blues
+    label_colors = cmap(np.linspace(0.3, 1, 10))  # 从浅到深取 10 种颜色
 
-    for i in range(10):  # 0-9共10个标签
+    for i in range(10):  # 0-9 共10个标签
         values = sorted_distributions[:, i]
-        ax.bar(x, values, bottom=bottom, color=label_colors[i], label=f'Label {i}', alpha=0.8)
+        ax.bar(x, values, bottom=bottom, color=label_colors[i], label=f'Label {i}', alpha=0.9)
         bottom += values
 
     # 添加聚类分界线
@@ -232,7 +215,7 @@ def visualize_es_clustering_result(es_label_distributions, cluster_labels,
         if boundary[1] < len(x) - 1:  # 不是最后一个ES
             ax.axvline(x=boundary[1] + 0.5, color='black', linestyle='--', linewidth=2)
 
-    # 设置x轴标签为聚类ID
+    # 设置x轴为聚类ID
     cluster_centers = [(boundary[0] + boundary[1]) / 2 for boundary in cluster_boundaries]
     ax.set_xticks(cluster_centers)
     ax.set_xticklabels([f'Cluster {i}' for i in unique_clusters])
@@ -340,20 +323,18 @@ def aggregate_es_models(w_locals, A, dict_users, net_glob):
             w_es = FedAvg_weighted(client_models, client_sizes)
             es_models[es_idx] = w_es
         else:
-            # 如果ES没有连接任何客户端，使用全局模型初始化
-            es_models[es_idx] = copy.deepcopy(net_glob.state_dict())
+            # 如果ES没有连接任何客户端，设为None
+            es_models[es_idx] = None #copy.deepcopy(net_glob.state_dict())
 
     return es_models
 
 
-def spectral_clustering_es(es_models, num_EHs=None, sigma=0.4, epsilon=None):
+def spectral_clustering_es(es_models, epsilon=None):
     """
     对边缘服务器模型进行谱聚类
 
     参数:
         es_models: 边缘服务器模型列表
-        num_EHs: 期望的聚类数量，如果为None则自动确定
-        sigma: 高斯核参数
         epsilon: 簇内距离阈值
 
     返回:
@@ -373,13 +354,8 @@ def spectral_clustering_es(es_models, num_EHs=None, sigma=0.4, epsilon=None):
     print(f"[谱聚类] 模型向量矩阵形状: {model_vectors.shape}")
 
     # 进行谱聚类
-    if num_EHs is None:
-        cluster_num, cluster_labels = cluster(model_vectors, sigma=sigma, epsilon=epsilon)
-        print(f"[谱聚类] 自动确定的最佳簇数: {cluster_num}")
-    else:
-        cluster_num, cluster_labels = cluster(model_vectors, cluster_num=num_EHs, sigma=sigma, epsilon=epsilon)
-        print(f"[谱聚类] 使用指定的簇数: {cluster_num}")
-
+    cluster_num, cluster_labels = cluster(model_vectors, epsilon=epsilon)
+    print(f"[谱聚类] 自动确定的最佳簇数: {cluster_num}")
 
     # 构建B矩阵
     num_ESs = len(es_models)

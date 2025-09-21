@@ -30,13 +30,18 @@ class LocalUpdate(object):
         self.selected_clients = []
         self.ldr_train = DataLoader(DatasetSplit(dataset, idxs), batch_size=self.args.local_bs, shuffle=True) # 数据加载器，
 
-    def train(self, net):
+    def train(self, net, init = 0):
         net.train()
         # train and update
         optimizer = torch.optim.SGD(net.parameters(), lr=self.args.lr, momentum=self.args.momentum) # 定义了优化器，采用随机梯度下降SGD
 
         epoch_loss = []
-        for iter in range(self.args.local_ep):
+        if init:
+            ep = self.args.local_ep*2
+        else:
+            ep = self.args.local_ep
+
+        for iter in range(ep):
             batch_loss = [] # 记录每个批次地损失值
             for batch_idx, (images, labels) in enumerate(self.ldr_train): # 遍历客户端数据集，按批次返回图像和对应标签
                 images, labels = images.to(self.args.device), labels.to(self.args.device) # 将图像和标签转移到gpu或者cpu
