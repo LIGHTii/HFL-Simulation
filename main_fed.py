@@ -4,6 +4,8 @@
 import os
 import matplotlib
 
+from utils.visualization_tool import create_enhanced_visualizations
+
 matplotlib.use('Agg')
 # 设置 matplotlib 使用英文字体，避免中文字体警告
 matplotlib.rcParams.update({
@@ -22,8 +24,9 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import csv
 from datetime import datetime
+import pandas as pd
 
-from utils.sampling import mnist_iid, mnist_noniid, cifar_iid
+from utils.sampling import get_data
 from utils.options import args_parser
 from utils.data_partition import get_client_datasets
 from utils.visualize_client_data import visualize_client_data_distribution
@@ -38,95 +41,8 @@ from models.cluster import (
     visualize_clustering_comparison
     #visualize_es_clustering_result,
 )
-'''
-def get_data_new(dataset_type, num_clients, data_path, partition_method='homo', noniid_param=0.4):
-    """
-    使用新的数据划分函数获取数据
-
-    Args:
-        dataset_type (str): 数据集类型 ('mnist', 'cifar10', 'cifar100')
-        num_clients (int): 客户端数量
-        data_path (str): 数据保存路径
-        partition_method (str): 数据分区方式
-        noniid_param (float): non-iid分布参数
-
-    Returns:
-        tuple: (训练数据集, 测试数据集, 客户端数据映射)
-    """
-
-    return get_client_datasets(dataset_type, num_clients, data_path, partition_method, noniid_param)
-
-
-def get_data(args):
-    """兼容原有接口的数据获取函数"""
-
-    # 确定数据集类型和路径
-    if args.dataset == 'mnist':
-        dataset_type = 'mnist'
-        data_path = os.path.join(args.data_path, 'mnist/')
-        # 创建兼容的数据集对象
-        trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        dataset_train = datasets.MNIST(data_path, train=True, download=True, transform=trans_mnist)
-        dataset_test = datasets.MNIST(data_path, train=False, download=True, transform=trans_mnist)
-
-    elif args.dataset == 'cifar':
-        dataset_type = 'cifar10'
-        data_path = os.path.join(args.data_path, 'cifar/')
-        # 创建兼容的数据集对象
-        trans_cifar = transforms.Compose(
-            [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-        dataset_train = datasets.CIFAR10(data_path, train=True, download=True, transform=trans_cifar)
-        dataset_test = datasets.CIFAR10(data_path, train=False, download=True, transform=trans_cifar)
-
-    else:
-        exit('Error: unrecognized dataset')
-
-    # 确定分区方法 - 优先使用新的partition参数
-    if hasattr(args, 'partition'):
-        partition_method = args.partition
-        # 如果还设置了iid参数，覆盖partition设置
-        if hasattr(args, 'iid') and args.iid:
-            partition_method = 'homo'
-    else:
-        # 兼容旧版本参数
-        if hasattr(args, 'iid') and args.iid:
-            partition_method = 'homo'
-        else:
-            partition_method = 'noniid-labeldir'
-
-    # 确定non-iid参数
-    noniid_param = getattr(args, 'beta', 0.4)
-
-    print(f"使用数据划分方法: {partition_method}, non-iid参数: {noniid_param}")
-
-    # 使用新的数据划分方法获取客户端映射
-    train_data, test_data, dict_users = get_data_new(
-        dataset_type, args.num_users, data_path, partition_method, noniid_param
-    )
-    # visualize_client_data_distribution(dict_users, dataset_train, args)
-    return dataset_train, dataset_test, dict_users
-'''
-
-def get_data(args):
-    if args.dataset == 'mnist':
-        trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        dataset_train = datasets.MNIST('../data/mnist/', train=True, download=True, transform=trans_mnist)
-        dataset_test = datasets.MNIST('../data/mnist/', train=False, download=True, transform=trans_mnist)
-        if args.iid:
-            dict_users = mnist_iid(dataset_train, args.num_users)
-        else:
-            dict_users = mnist_noniid(dataset_train, args.num_users)
-    elif args.dataset == 'cifar':
-        trans_cifar = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-        dataset_train = datasets.CIFAR10('../data/cifar', train=True, download=True, transform=trans_cifar)
-        dataset_test = datasets.CIFAR10('../data/cifar', train=False, download=True, transform=trans_cifar)
-        if args.iid:
-            dict_users = cifar_iid(dataset_train, args.num_users)
-        else:
-            exit('Error: only consider IID setting in CIFAR10')
-    else:
-        exit('Error: unrecognized dataset')
-    return dataset_train, dataset_test, dict_users
+import numpy as np
+import random
 
 
 def build_model(args, dataset_train):
@@ -194,7 +110,7 @@ def get_A(num_users, num_ESs):
     return A
 
 
-'''def get_B(num_ESs, num_EHs):
+def get_B(num_ESs, num_EHs):
     B = np.zeros((num_ESs, num_EHs), dtype=int)
 
     # 对每一行随机选择一个索引，将该位置设为 1
@@ -202,7 +118,7 @@ def get_A(num_users, num_ESs):
         random_index = np.random.randint(0, num_EHs)
         B[i, random_index] = 1
 
-    return B'''
+    return B
 
 
 def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distributions):
@@ -254,56 +170,49 @@ def build_hierarchy(A, B):
     return C1, C2
 
 
-def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl, w_sfl_global):
+def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl_random, w_input_hfl_cluster, w_sfl_global, client_classes=None):
     """
     单个客户端的训练函数，用于被多进程调用。
+    现在支持三种模型：SFL、HFL(随机B矩阵)、HFL(聚类B矩阵)
 
     注意：为了兼容多进程，我们不直接传递大型模型对象，
     而是传递模型权重(state_dict)和模型架构信息(args)，在子进程中重新构建模型。
     """
     # 在子进程中重新构建模型
-    # 这种方式可以避免在进程间传递复杂的、不可序列化的对象
-    # print(f"CLIENT_{user_idx} START")
-    '''if args.model == 'cnn' and args.dataset == 'cifar':
-        local_net_hfl = CNNCifar(args=args)
-        local_net_sfl = CNNCifar(args=args)
-    elif args.model == 'cnn' and args.dataset == 'mnist':
-        local_net_hfl = CNNMnist(args=args)
-        local_net_sfl = CNNMnist(args=args)
-    # 你可以根据需要添加 MLP 等其他模型的构建逻辑
-    else:
-        # 退出或抛出错误
-        exit('Error: unrecognized model in train_client')'''
-
-    # 在子进程中重新构建模型（复用 build_model）
-    local_net_hfl = build_model(args, dataset_train)
+    local_net_hfl_random = build_model(args, dataset_train)
+    local_net_hfl_cluster = build_model(args, dataset_train)
     local_net_sfl = build_model(args, dataset_train)
-
-    # 加载全局权重
-    local_net_hfl.load_state_dict(w_input_hfl)
-    local_net_sfl.load_state_dict(w_sfl_global)
-
-    # print(f"CLIENT_{user_idx} TRAIN")
-    # --- 训练分层模型 (HFL) ---
-    local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx])
-    local_net_hfl.load_state_dict(w_input_hfl)
-    w_hfl, loss_hfl = local.train(net=local_net_hfl.to(args.device))
-    # print(f"CLIENT_{user_idx} TRAINing")
-
+    
+    # 获取当前客户端的类别信息
+    user_classes = client_classes.get(user_idx, None) if client_classes else None
+    
+    # --- 训练HFL模型 (使用随机B矩阵) ---
+    local_random = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
+    local_net_hfl_random.load_state_dict(w_input_hfl_random)
+    w_hfl_random, loss_hfl_random = local_random.train(net=local_net_hfl_random.to(args.device))
+    
+    # --- 训练HFL模型 (使用聚类B矩阵) ---
+    local_cluster = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
+    local_net_hfl_cluster.load_state_dict(w_input_hfl_cluster)
+    w_hfl_cluster, loss_hfl_cluster = local_cluster.train(net=local_net_hfl_cluster.to(args.device))
+    
     # --- 训练单层模型 (SFL) ---
+    local_sfl = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
     local_net_sfl.load_state_dict(w_sfl_global)
-    w_sfl, loss_sfl = local.train(net=local_net_sfl.to(args.device))
-    print(f"CLIENT_{user_idx} END")
+    w_sfl, loss_sfl = local_sfl.train(net=local_net_sfl.to(args.device))
 
     # 返回结果，包括 user_idx 以便后续排序
-    return user_idx, copy.deepcopy(w_hfl), loss_hfl, copy.deepcopy(w_sfl), loss_sfl
+    return (user_idx, 
+            copy.deepcopy(w_hfl_random), loss_hfl_random,
+            copy.deepcopy(w_hfl_cluster), loss_hfl_cluster, 
+            copy.deepcopy(w_sfl), loss_sfl)
 
 def save_results_to_csv(results, filename):
-    """Save results to CSV file"""
-    with open(filename, 'w', newline='') as csvfile:
-        fieldnames = ['epoch', 'hfl_test_acc', 'hfl_test_loss', 'sfl_test_acc', 'sfl_test_loss']
+    """Save results to CSV file for three models"""
+    with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = ['epoch', 'train_loss', 'test_loss', 'test_acc', 'model_type']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
+        
         writer.writeheader()
         for result in results:
             writer.writerow(result)
@@ -314,7 +223,30 @@ if __name__ == '__main__':
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
 
-    dataset_train, dataset_test, dict_users = get_data(args)
+    dataset_train, dataset_test, dict_users, client_classes = get_data(args)
+
+    # 打印 FedRS 配置信息
+    if args.method == 'fedrs':
+        print("\n" + "="*50)
+        print("FedRS 算法配置信息")
+        print("="*50)
+        print(f"联邦学习方法: {args.method}")
+        print(f"FedRS Alpha 参数: {args.fedrs_alpha}")
+        print(f"最小本地训练轮次: {args.min_le}")
+        print(f"最大本地训练轮次: {args.max_le}")
+        
+        # 统计客户端类别分布
+        class_counts = {}
+        for client_id, classes in client_classes.items():
+            num_classes = len(classes)
+            class_counts[num_classes] = class_counts.get(num_classes, 0) + 1
+        
+        print("\n客户端类别分布统计:")
+        for num_classes, count in sorted(class_counts.items()):
+            print(f"  拥有 {num_classes} 个类别的客户端数量: {count}")
+        print("="*50 + "\n")
+    else:
+        print(f"\n使用联邦学习方法: {args.method}\n")
 
     net_glob = build_model(args, dataset_train)
 
@@ -323,10 +255,10 @@ if __name__ == '__main__':
     # 初始化全局权重
     w_glob = net_glob.state_dict()
     num_users = args.num_users
-    num_ESs = num_users // 3
-    k2 = 2
-    k3 = 2
-    num_processes = 8  # min(args.num_users//3, (os.cpu_count())//3)
+    num_ESs = num_users // 2
+    k2 = args.ES_k2
+    k3 = args.EH_k3
+    num_processes = args.num_processes
 
     A = get_A(num_users, num_ESs)
 
@@ -339,100 +271,144 @@ if __name__ == '__main__':
     )
 
     # 2. 使用谱聚类生成B矩阵
-    B = get_B_cluster(
+    B_cluster = get_B_cluster(
         args, w_locals, A, dict_users, net_glob, client_label_distributions
     )
-    num_EHs = B.shape[1]
+    num_EHs = B_cluster.shape[1]
+    
+    # 3. 同时生成随机B矩阵用于对比
+    B_random = get_B(num_ESs, num_EHs)
 
-    C1, C2 = build_hierarchy(A, B)
-    print("C1 (一级->客户端):", C1)
-    print("C2 (二级->一级):", C2)
+    # 构建两套层级结构
+    C1_random, C2_random = build_hierarchy(A, B_random)
+    C1_cluster, C2_cluster = build_hierarchy(A, B_cluster)
+    
+    print("C1_random (一级->客户端):", C1_random)
+    print("C2_random (二级->一级):", C2_random)
+    print("C1_cluster (一级->客户端):", C1_cluster)
+    print("C2_cluster (二级->一级):", C2_cluster)
+
+    # 打印FedRS配置信息
+    print(f"\n--- FedRS Configuration ---")
+    print(f"Method: {args.method}")
+    if args.method == 'fedrs':
+        print(f"FedRS Alpha: {args.fedrs_alpha}")
+        print(f"Min Local Epochs: {args.min_le}")
+        print(f"Max Local Epochs: {args.max_le}")
+        print("FedRS Restricted Softmax: Enabled")
+        # 打印前几个客户端的类别信息
+        print("Sample Client Class Distributions:")
+        for i in range(min(5, len(client_classes))):
+            print(f"  Client {i}: Classes {client_classes[i]}")
+    else:
+        print("FedRS: Disabled (using standard FedAvg)")
+    print("-----------------------------\n")
 
     # 创建结果保存目录
     if not os.path.exists('./results'):
         os.makedirs('./results')
 
-    # 生成唯一的时间戳用于文件名
+    # 生成唯一的时间戳用于文件名，包含重要参数
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_filename = f'./results/training_results_{timestamp}.csv'
+    param_str = f"e{args.epochs}_u{args.num_users}_le{args.local_ep}_{args.dataset}_{args.model}_k2{args.ES_k2}_k3{args.EH_k3}_p{args.num_processes}"
+    if not args.iid:
+        param_str += f"_beta{args.beta}"
+    csv_filename = f'./results/training_results_{param_str}_{timestamp}.csv'
 
-    # 初始化结果记录列表
+    # 初始化结果记录列表 - 新格式支持三种模型
     results_history = []
 
     # 训练前测试初始模型
     print("\n--- Testing Initial Global Models ---")
     net_glob.eval()
 
-    # 测试初始 HFL 模型
-    acc_hfl_init, loss_hfl_init = test_img(net_glob, dataset_test, args)
-    print(f"Initial HFL Model - Testing accuracy: {acc_hfl_init:.2f}%, Loss: {loss_hfl_init:.4f}")
+    # 测试初始模型
+    acc_init, loss_init = test_img(net_glob, dataset_test, args)
+    print(f"Initial Model - Testing accuracy: {acc_init:.2f}%, Loss: {loss_init:.4f}")
 
-    # 测试初始 SFL 模型
-    acc_sfl_init, loss_sfl_init = test_img(net_glob, dataset_test, args)
-    print(f"Initial SFL Model - Testing accuracy: {acc_sfl_init:.2f}%, Loss: {loss_sfl_init:.4f}")
-
-    # 记录初始结果
-    results_history.append({
-        'epoch': -1,
-        'hfl_test_acc': acc_hfl_init,
-        'hfl_test_loss': loss_hfl_init,
-        'sfl_test_acc': acc_sfl_init,
-        'sfl_test_loss': loss_sfl_init
-    })
+    # 记录初始结果 - 三种模型使用相同的初始权重
+    for model_name in ['HFL_Random_B', 'HFL_Cluster_B', 'SFL']:
+        results_history.append({
+            'epoch': -1,
+            'train_loss': 0.0,  # 初始训练损失暂时设为0
+            'test_loss': loss_init,
+            'test_acc': acc_init,
+            'model_type': model_name
+        })
 
     # 保存初始结果到CSV
     save_results_to_csv(results_history, csv_filename)
 
     # training
-    # --- 初始化两个模型，确保初始权重相同 ---
-    # net_glob_hfl 是 HFL 的全局模型
-    net_glob_hfl = net_glob
-    w_glob_hfl = net_glob_hfl.state_dict()
+    # --- 初始化三个模型，确保初始权重相同 ---
+    # net_glob_hfl_random 是使用随机B矩阵的 HFL 全局模型
+    net_glob_hfl_random = copy.deepcopy(net_glob)
+    w_glob_hfl_random = net_glob_hfl_random.state_dict()
+
+    # net_glob_hfl_cluster 是使用聚类B矩阵的 HFL 全局模型
+    net_glob_hfl_cluster = copy.deepcopy(net_glob)
+    w_glob_hfl_cluster = net_glob_hfl_cluster.state_dict()
 
     # net_glob_sfl 是 SFL 的全局模型
     net_glob_sfl = copy.deepcopy(net_glob)
     w_glob_sfl = net_glob_sfl.state_dict()
 
-    # --- 分别记录两种模型的指标 ---
-    loss_train_hfl = []
+    # --- 分别记录三种模型的指标 ---
+    loss_train_hfl_random = []
+    loss_train_hfl_cluster = []
     loss_train_sfl = []
-    loss_test_hfl = []
+    loss_test_hfl_random = []
+    loss_test_hfl_cluster = []
     loss_test_sfl = []
-    acc_test_hfl = []
+    acc_test_hfl_random = []
+    acc_test_hfl_cluster = []
     acc_test_sfl = []
 
     # 添加提前停止标志
     early_stop = False
 
     for epoch in range(args.epochs):
-        if early_stop:
-            print(f"HFL accuracy reached 95% at epoch {epoch - 1}. Stopping training early.")
-            break
-
-        # HFL 模型权重分发 (Cloud -> EH)
-        EHs_ws_hfl = [copy.deepcopy(w_glob_hfl) for _ in range(num_EHs)]
+        # HFL 随机B矩阵模型权重分发 (Cloud -> EH)
+        EHs_ws_hfl_random = [copy.deepcopy(w_glob_hfl_random) for _ in range(num_EHs)]
+        
+        # HFL 聚类B矩阵模型权重分发 (Cloud -> EH)
+        EHs_ws_hfl_cluster = [copy.deepcopy(w_glob_hfl_cluster) for _ in range(num_EHs)]
 
         # EH 层聚合 k3 轮
         for t3 in range(k3):
-            # HFL: EH 层 -> ES 层
-            ESs_ws_input_hfl = [None] * num_ESs
-            for EH_idx, ES_indices in C2.items():
+            # HFL随机: EH 层 -> ES 层
+            ESs_ws_input_hfl_random = [None] * num_ESs
+            for EH_idx, ES_indices in C2_random.items():
                 for ES_idx in ES_indices:
-                    ESs_ws_input_hfl[ES_idx] = copy.deepcopy(EHs_ws_hfl[EH_idx])
+                    ESs_ws_input_hfl_random[ES_idx] = copy.deepcopy(EHs_ws_hfl_random[EH_idx])
+            
+            # HFL聚类: EH 层 -> ES 层
+            ESs_ws_input_hfl_cluster = [None] * num_ESs
+            for EH_idx, ES_indices in C2_cluster.items():
+                for ES_idx in ES_indices:
+                    ESs_ws_input_hfl_cluster[ES_idx] = copy.deepcopy(EHs_ws_hfl_cluster[EH_idx])
 
             # ES 层聚合 k2 轮
             for t2 in range(k2):
-                # --- 本地训练 (HFL 和 SFL 并行) ---
-                # HFL: ES 层 -> Client 层
-                w_locals_input_hfl = [None] * num_users
-                for ES_idx, user_indices in C1.items():
+                # --- 本地训练 (三种模型并行) ---
+                # HFL随机: ES 层 -> Client 层
+                w_locals_input_hfl_random = [None] * num_users
+                for ES_idx, user_indices in C1_random.items():
                     for user_idx in user_indices:
-                        w_locals_input_hfl[user_idx] = copy.deepcopy(ESs_ws_input_hfl[ES_idx])
+                        w_locals_input_hfl_random[user_idx] = copy.deepcopy(ESs_ws_input_hfl_random[ES_idx])
+                
+                # HFL聚类: ES 层 -> Client 层
+                w_locals_input_hfl_cluster = [None] * num_users
+                for ES_idx, user_indices in C1_cluster.items():
+                    for user_idx in user_indices:
+                        w_locals_input_hfl_cluster[user_idx] = copy.deepcopy(ESs_ws_input_hfl_cluster[ES_idx])
 
-                # 用于存储两种模型本地训练的输出
-                w_locals_output_hfl = [None] * num_users
+                # 用于存储三种模型本地训练的输出
+                w_locals_output_hfl_random = [None] * num_users
+                w_locals_output_hfl_cluster = [None] * num_users
                 w_locals_output_sfl = [None] * num_users
-                loss_locals_hfl = []
+                loss_locals_hfl_random = []
+                loss_locals_hfl_cluster = []
                 loss_locals_sfl = []
 
                 print(
@@ -441,11 +417,10 @@ if __name__ == '__main__':
                 # 准备传递给每个子进程的参数
                 tasks = []
                 for user_idx in range(num_users):
-                    # 注意：这里我们不传递完整的 net_glob_hfl 和 net_glob_sfl 对象
-                    # 因为它们可能不可序列化。我们已经在工作函数内部重新构建它们。
                     task_args = (
                         args, user_idx, dataset_train, dict_users,
-                        w_locals_input_hfl[user_idx], w_glob_sfl,
+                        w_locals_input_hfl_random[user_idx], w_locals_input_hfl_cluster[user_idx], 
+                        w_glob_sfl, client_classes
                     )
                     tasks.append(task_args)
                 print("成功创建多线程！")
@@ -453,153 +428,203 @@ if __name__ == '__main__':
                 # 创建进程池并分发任务
                 # 使用 with 语句可以自动管理进程池的关闭
                 with mp.Pool(processes=num_processes) as pool:
-                    # ===================== 主要修改点 =====================
-                    # 使用 tqdm 包装 tasks 列表，以在多进程训练期间显示进度条。
-                    # desc 参数为进度条提供一个描述性标签。
-                    # 随着每个客户端训练任务的完成，进度条会自动更新。
-                    # ====================================================
-                    results = pool.starmap(train_client, tasks)
+                    results = pool.starmap(train_client, tqdm(tasks, desc=f"Epoch {epoch}|{t3 + 1}|{t2 + 1} Training Clients"))
 
                 print("训练结束")
-                # 3. 收集并整理所有客户端的训练结果
-                # 因为 starmap 保证了顺序，我们可以直接处理
-                # 如果使用 imap_unordered，则需要根据返回的 user_idx 来排序
+                # 收集并整理所有客户端的训练结果
                 for result in results:
-                    u_idx, w_h, l_h, w_s, l_s = result
-                    w_locals_output_hfl[u_idx] = w_h
-                    loss_locals_hfl.append(l_h)
+                    u_idx, w_hr, l_hr, w_hc, l_hc, w_s, l_s = result
+                    w_locals_output_hfl_random[u_idx] = w_hr
+                    loss_locals_hfl_random.append(l_hr)
+                    w_locals_output_hfl_cluster[u_idx] = w_hc
+                    loss_locals_hfl_cluster.append(l_hc)
                     w_locals_output_sfl[u_idx] = w_s
                     loss_locals_sfl.append(l_s)
+                
                 print("排序结束")
                 print(f"[Parallel Training] All {args.num_users} clients have finished training.")
                 print(f'\nEpoch {epoch} | EH_R {t3 + 1}/{k3} | ES_R {t2 + 1}/{k2} | 开始聚合')
 
                 # --- HFL 聚合 (Client -> ES) ---
-                ESs_ws_input_hfl = FedAvg_layered(w_locals_output_hfl, C1)
+                ESs_ws_input_hfl_random = FedAvg_layered(w_locals_output_hfl_random, C1_random)
+                ESs_ws_input_hfl_cluster = FedAvg_layered(w_locals_output_hfl_cluster, C1_cluster)
 
                 # --- SFL 全局聚合 (Client -> Cloud) ---
                 w_glob_sfl = FedAvg(w_locals_output_sfl)
                 net_glob_sfl.load_state_dict(w_glob_sfl)
 
                 # --- 记录损失 ---
-                loss_avg_hfl = sum(loss_locals_hfl) / len(loss_locals_hfl)
+                loss_avg_hfl_random = sum(loss_locals_hfl_random) / len(loss_locals_hfl_random)
+                loss_avg_hfl_cluster = sum(loss_locals_hfl_cluster) / len(loss_locals_hfl_cluster)
                 loss_avg_sfl = sum(loss_locals_sfl) / len(loss_locals_sfl)
-                loss_train_hfl.append(loss_avg_hfl)
+                
+                loss_train_hfl_random.append(loss_avg_hfl_random)
+                loss_train_hfl_cluster.append(loss_avg_hfl_cluster)
                 loss_train_sfl.append(loss_avg_sfl)
 
-                print(
-                    f'\nEpoch {epoch} | EH_R {t3 + 1}/{k3} | ES_R {t2 + 1}/{k2} | HFL Loss {loss_avg_hfl:.4f} | SFL Loss {loss_avg_sfl:.4f}')
+                print(f'\nEpoch {epoch} | EH_R {t3 + 1}/{k3} | ES_R {t2 + 1}/{k2}')
+                print(f'HFL_Random Loss: {loss_avg_hfl_random:.4f} | HFL_Cluster Loss: {loss_avg_hfl_cluster:.4f} | SFL Loss: {loss_avg_sfl:.4f}')
 
             # HFL 聚合 (ES -> EH)
-            EHs_ws_hfl = FedAvg_layered(ESs_ws_input_hfl, C2)
+            EHs_ws_hfl_random = FedAvg_layered(ESs_ws_input_hfl_random, C2_random)
+            EHs_ws_hfl_cluster = FedAvg_layered(ESs_ws_input_hfl_cluster, C2_cluster)
 
         # HFL 全局聚合 (EH -> Cloud)
-        # HFL 的全局模型只在 k3 轮结束后才更新一次
-        w_glob_hfl = FedAvg(EHs_ws_hfl)
-        net_glob_hfl.load_state_dict(w_glob_hfl)
+        w_glob_hfl_random = FedAvg(EHs_ws_hfl_random)
+        net_glob_hfl_random.load_state_dict(w_glob_hfl_random)
+        
+        w_glob_hfl_cluster = FedAvg(EHs_ws_hfl_cluster)
+        net_glob_hfl_cluster.load_state_dict(w_glob_hfl_cluster)
 
         # --- 在每个 EPOCH 结束时进行测试 ---
-        net_glob_hfl.eval()
+        net_glob_hfl_random.eval()
+        net_glob_hfl_cluster.eval()
         net_glob_sfl.eval()
 
-        # 评估 HFL 模型
-        acc_hfl, loss_hfl = test_img(net_glob_hfl, dataset_test, args)
-        acc_test_hfl.append(acc_hfl)
-        loss_test_hfl.append(loss_hfl)
+        # 评估 HFL 随机B模型
+        acc_hfl_random, loss_hfl_random = test_img(net_glob_hfl_random, dataset_test, args)
+        acc_test_hfl_random.append(acc_hfl_random)
+        loss_test_hfl_random.append(loss_hfl_random)
+
+        # 评估 HFL 聚类B模型
+        acc_hfl_cluster, loss_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_test, args)
+        acc_test_hfl_cluster.append(acc_hfl_cluster)
+        loss_test_hfl_cluster.append(loss_hfl_cluster)
 
         # 评估 SFL 模型
         acc_sfl, loss_sfl = test_img(net_glob_sfl, dataset_test, args)
         acc_test_sfl.append(acc_sfl)
         loss_test_sfl.append(loss_sfl)
 
-        # 记录当前epoch的结果
-        results_history.append({
-            'epoch': epoch,
-            'hfl_test_acc': acc_hfl,
-            'hfl_test_loss': loss_hfl,
-            'sfl_test_acc': acc_sfl,
-            'sfl_test_loss': loss_sfl
-        })
+        # 记录当前epoch的结果 - 新格式
+        current_epoch_results = [
+            {
+                'epoch': epoch,
+                'train_loss': loss_avg_hfl_random,
+                'test_loss': loss_hfl_random,
+                'test_acc': acc_hfl_random,
+                'model_type': 'HFL_Random_B'
+            },
+            {
+                'epoch': epoch,
+                'train_loss': loss_avg_hfl_cluster,
+                'test_loss': loss_hfl_cluster,
+                'test_acc': acc_hfl_cluster,
+                'model_type': 'HFL_Cluster_B'
+            },
+            {
+                'epoch': epoch,
+                'train_loss': loss_avg_sfl,
+                'test_loss': loss_sfl,
+                'test_acc': acc_sfl,
+                'model_type': 'SFL'
+            }
+        ]
+        
+        results_history.extend(current_epoch_results)
 
         # 保存结果到CSV
         save_results_to_csv(results_history, csv_filename)
 
         # 打印当前 EPOCH 结束时的测试结果
-        print(
-            f'\nEpoch {epoch} [END OF EPOCH TEST] | HFL Acc: {acc_hfl:.2f}%, Loss: {loss_hfl:.4f} | SFL Acc: {acc_sfl:.2f}%, Loss: {loss_sfl:.4f}')
+        print(f'\nEpoch {epoch} [END OF EPOCH TEST]')
+        print(f'HFL_Random: Acc {acc_hfl_random:.2f}%, Loss {loss_hfl_random:.4f}')
+        print(f'HFL_Cluster: Acc {acc_hfl_cluster:.2f}%, Loss {loss_hfl_cluster:.4f}')
+        print(f'SFL: Acc {acc_sfl:.2f}%, Loss {loss_sfl:.4f}')
 
-        # 检查是否达到停止条件
-        # if acc_hfl >= 95.0:
-        #     print(f"HFL accuracy reached {acc_hfl:.2f}% at epoch {epoch}. Stopping training early.")
-        #     early_stop = True
-
-        net_glob_hfl.train()  # 切换回训练模式
+        net_glob_hfl_random.train()  # 切换回训练模式
+        net_glob_hfl_cluster.train()  # 切换回训练模式
         net_glob_sfl.train()  # 切换回训练模式
 
     # =====================================================================================
-    # Plot loss curve
-    # =====================================================================================
-    plt.figure()
-    plt.plot(range(len(loss_train_hfl)), loss_train_hfl, label='HFL (3-layer)')
-    plt.plot(range(len(loss_train_sfl)), loss_train_sfl, label='SFL (Frequent Update)')
-    plt.ylabel('Train Loss')
-    plt.xlabel('Communication Rounds (ES-Client Level)')
-    plt.legend()
-    plt.title('HFL vs SFL Training Loss')
-    plt.savefig(
-        './save/fed_compare_freq_{}_{}_{}_C{}_iid{}.png'.format(args.dataset, args.model, args.epochs, args.frac,
-                                                                args.iid))
-    # =====================================================================================
-    # Plot test loss curve
-    # =====================================================================================
-    plt.figure()
-    plt.plot(range(len(loss_test_hfl)), loss_test_hfl, label='HFL (Test Loss)')
-    plt.plot(range(len(loss_test_sfl)), loss_test_sfl, label='SFL (Test Loss)')
-    plt.ylabel('Test Loss')
-    plt.xlabel('Communication Rounds (ES-Client Level)')
-    plt.legend()
-    plt.title('HFL vs SFL Test Loss')
-    plt.savefig(
-        './save/fed_test_loss_{}_{}_{}_C{}_iid{}.png'.format(args.dataset, args.model, args.epochs, args.frac,
-                                                             args.iid))
-    plt.show()
-
-    # =====================================================================================
-    # Testing
+    # Final Testing - 测试三种模型的最终性能
     # =====================================================================================
     print("\n--- Final Model Evaluation ---")
-    # 测试 HFL 模型
-    net_glob_hfl.eval()
-    acc_train_hfl, loss_train_hfl = test_img(net_glob_hfl, dataset_train, args)
-    acc_test_hfl, loss_test_hfl = test_img(net_glob_hfl, dataset_test, args)
-    print(f"HFL Model (Slower Global Update) - Training accuracy: {acc_train_hfl:.2f}%")
-    print(f"HFL Model (Slower Global Update) - Testing accuracy: {acc_test_hfl:.2f}%")
+    
+    # 测试 HFL 随机B矩阵模型
+    net_glob_hfl_random.eval()
+    acc_train_hfl_random, loss_train_final_hfl_random = test_img(net_glob_hfl_random, dataset_train, args)
+    acc_test_final_hfl_random, loss_test_final_hfl_random = test_img(net_glob_hfl_random, dataset_test, args)
+    print(f"HFL Model (Random B Matrix) - Training accuracy: {acc_train_hfl_random:.2f}%, Testing accuracy: {acc_test_final_hfl_random:.2f}%")
+    
+    # 测试 HFL 聚类B矩阵模型
+    net_glob_hfl_cluster.eval()
+    acc_train_hfl_cluster, loss_train_final_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_train, args)
+    acc_test_final_hfl_cluster, loss_test_final_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_test, args)
+    print(f"HFL Model (Clustered B Matrix) - Training accuracy: {acc_train_hfl_cluster:.2f}%, Testing accuracy: {acc_test_final_hfl_cluster:.2f}%")
 
     # 测试 SFL 模型
     net_glob_sfl.eval()
-    acc_train_sfl, loss_train_sfl = test_img(net_glob_sfl, dataset_train, args)
-    acc_test_sfl, loss_test_sfl = test_img(net_glob_sfl, dataset_test, args)
-    print(f"SFL Model (Frequent Global Update) - Training accuracy: {acc_train_sfl:.2f}%")
-    print(f"SFL Model (Frequent Global Update) - Testing accuracy: {acc_test_sfl:.2f}%")
+    acc_train_sfl, loss_train_final_sfl = test_img(net_glob_sfl, dataset_train, args)
+    acc_test_final_sfl, loss_test_final_sfl = test_img(net_glob_sfl, dataset_test, args)
+    print(f"SFL Model (Single Layer) - Training accuracy: {acc_train_sfl:.2f}%, Testing accuracy: {acc_test_final_sfl:.2f}%")
 
     # 保存最终结果
-    final_results = {
-        'hfl_train_acc': acc_train_hfl,
-        'hfl_train_loss': loss_train_hfl,
-        'hfl_test_acc': acc_test_hfl,
-        'hfl_test_loss': loss_test_hfl,
-        'sfl_train_acc': acc_train_sfl,
-        'sfl_train_loss': loss_train_sfl,
-        'sfl_test_acc': acc_test_sfl,
-        'sfl_test_loss': loss_test_sfl
-    }
+    final_results = [
+        {
+            'model_type': 'HFL_Random_B',
+            'final_train_acc': acc_train_hfl_random,
+            'final_train_loss': loss_train_final_hfl_random,
+            'final_test_acc': acc_test_final_hfl_random,
+            'final_test_loss': loss_test_final_hfl_random
+        },
+        {
+            'model_type': 'HFL_Cluster_B',
+            'final_train_acc': acc_train_hfl_cluster,
+            'final_train_loss': loss_train_final_hfl_cluster,
+            'final_test_acc': acc_test_final_hfl_cluster,
+            'final_test_loss': loss_test_final_hfl_cluster
+        },
+        {
+            'model_type': 'SFL',
+            'final_train_acc': acc_train_sfl,
+            'final_train_loss': loss_train_final_sfl,
+            'final_test_acc': acc_test_final_sfl,
+            'final_test_loss': loss_test_final_sfl
+        }
+    ]
 
     # 将最终结果追加到CSV文件
-    with open(csv_filename, 'a', newline='') as csvfile:
+    with open(csv_filename, 'a', newline='', encoding='utf-8') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow([])  # 空行分隔
         writer.writerow(['Final Results'])
-        for key, value in final_results.items():
-            writer.writerow([key, value])
+        writer.writerow(['model_type', 'final_train_acc', 'final_train_loss', 'final_test_acc', 'final_test_loss'])
+        for result in final_results:
+            writer.writerow([result['model_type'], result['final_train_acc'], 
+                            result['final_train_loss'], result['final_test_acc'], result['final_test_loss']])
 
-    print(f"\nAll results saved to {csv_filename}")
+    print(f"\n=== 训练完成 ===")
+    print(f"所有结果已保存到: {csv_filename}")
+    
+    try:
+        print("\n正在生成可视化图表...")
+        comprehensive_file, summary_file = create_enhanced_visualizations(csv_filename)
+        print(f"综合对比图: {comprehensive_file}")
+        print(f"性能总结表: {summary_file}")
+    except Exception as e:
+        print(f"可视化生成失败: {e}")
+        print("请检查数据格式或手动运行visualization_tool.py")
+    
+    print(f"\n=== 实验总结 ===")
+    print("本次实验对比了三种联邦学习方法:")
+    print("1. HFL (Random B Matrix) - 使用随机生成的ES-EH关联矩阵")
+    print("2. HFL (Clustered B Matrix) - 使用谱聚类生成的ES-EH关联矩阵") 
+    print("3. SFL (Single Layer) - 传统单层联邦学习")
+    print(f"训练参数: epochs={args.epochs}, clients={args.num_users}, local_epochs={args.local_ep}")
+    print(f"层级参数: k2={args.ES_k2} (ES层聚合轮数), k3={args.EH_k3} (EH层聚合轮数)")
+    print(f"并行参数: num_processes={args.num_processes}")
+    print(f"数据集: {args.dataset}, 模型: {args.model}, IID: {args.iid}")
+    if not args.iid:
+        print(f"非IID参数: beta={args.beta}")
+    
+    # 显示最终性能对比
+    try:
+        df = pd.read_csv(csv_filename, encoding='utf-8')
+        final_results = df[df['epoch'] == df['epoch'].max()]
+        print(f"\n最终测试准确率对比:")
+        for _, row in final_results.iterrows():
+            model_name = row['model_type'].replace('_', ' ')
+            print(f"  {model_name}: {row['test_acc']:.2f}%")
+    except:
+        pass
