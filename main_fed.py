@@ -21,7 +21,7 @@ import os
 import csv
 from datetime import datetime
 
-from utils.sampling import mnist_iid, mnist_noniid, cifar_iid
+from utils.sampling import get_data
 from utils.options import args_parser
 from utils.data_partition import get_client_datasets
 from utils.visualize_client_data import visualize_client_data_distribution
@@ -34,96 +34,10 @@ from models.cluster import (
     aggregate_es_models, spectral_clustering_es,
     calculate_es_label_distributions,
     visualize_es_clustering_result,
+    calculate_es_label_distributions
 )
-'''
-def get_data_new(dataset_type, num_clients, data_path, partition_method='homo', noniid_param=0.4):
-    """
-    使用新的数据划分函数获取数据
-
-    Args:
-        dataset_type (str): 数据集类型 ('mnist', 'cifar10', 'cifar100')
-        num_clients (int): 客户端数量
-        data_path (str): 数据保存路径
-        partition_method (str): 数据分区方式
-        noniid_param (float): non-iid分布参数
-
-    Returns:
-        tuple: (训练数据集, 测试数据集, 客户端数据映射)
-    """
-
-    return get_client_datasets(dataset_type, num_clients, data_path, partition_method, noniid_param)
-
-
-def get_data(args):
-    """兼容原有接口的数据获取函数"""
-
-    # 确定数据集类型和路径
-    if args.dataset == 'mnist':
-        dataset_type = 'mnist'
-        data_path = os.path.join(args.data_path, 'mnist/')
-        # 创建兼容的数据集对象
-        trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        dataset_train = datasets.MNIST(data_path, train=True, download=True, transform=trans_mnist)
-        dataset_test = datasets.MNIST(data_path, train=False, download=True, transform=trans_mnist)
-
-    elif args.dataset == 'cifar':
-        dataset_type = 'cifar10'
-        data_path = os.path.join(args.data_path, 'cifar/')
-        # 创建兼容的数据集对象
-        trans_cifar = transforms.Compose(
-            [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-        dataset_train = datasets.CIFAR10(data_path, train=True, download=True, transform=trans_cifar)
-        dataset_test = datasets.CIFAR10(data_path, train=False, download=True, transform=trans_cifar)
-
-    else:
-        exit('Error: unrecognized dataset')
-
-    # 确定分区方法 - 优先使用新的partition参数
-    if hasattr(args, 'partition'):
-        partition_method = args.partition
-        # 如果还设置了iid参数，覆盖partition设置
-        if hasattr(args, 'iid') and args.iid:
-            partition_method = 'homo'
-    else:
-        # 兼容旧版本参数
-        if hasattr(args, 'iid') and args.iid:
-            partition_method = 'homo'
-        else:
-            partition_method = 'noniid-labeldir'
-
-    # 确定non-iid参数
-    noniid_param = getattr(args, 'beta', 0.4)
-
-    print(f"使用数据划分方法: {partition_method}, non-iid参数: {noniid_param}")
-
-    # 使用新的数据划分方法获取客户端映射
-    train_data, test_data, dict_users = get_data_new(
-        dataset_type, args.num_users, data_path, partition_method, noniid_param
-    )
-    # visualize_client_data_distribution(dict_users, dataset_train, args)
-    return dataset_train, dataset_test, dict_users
-'''
-
-def get_data(args):
-    if args.dataset == 'mnist':
-        trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        dataset_train = datasets.MNIST('../data/mnist/', train=True, download=True, transform=trans_mnist)
-        dataset_test = datasets.MNIST('../data/mnist/', train=False, download=True, transform=trans_mnist)
-        if args.iid:
-            dict_users = mnist_iid(dataset_train, args.num_users)
-        else:
-            dict_users = mnist_noniid(dataset_train, args.num_users)
-    elif args.dataset == 'cifar':
-        trans_cifar = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-        dataset_train = datasets.CIFAR10('../data/cifar', train=True, download=True, transform=trans_cifar)
-        dataset_test = datasets.CIFAR10('../data/cifar', train=False, download=True, transform=trans_cifar)
-        if args.iid:
-            dict_users = cifar_iid(dataset_train, args.num_users)
-        else:
-            exit('Error: only consider IID setting in CIFAR10')
-    else:
-        exit('Error: unrecognized dataset')
-    return dataset_train, dataset_test, dict_users
+import numpy as np
+import random
 
 
 def build_model(args, dataset_train):
@@ -225,7 +139,7 @@ def build_hierarchy(A, B):
     return C1, C2
 
 
-def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl, w_sfl_global):
+def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl, w_sfl_global, client_classes=None):
     """
     单个客户端的训练函数，用于被多进程调用。
 
@@ -245,16 +159,21 @@ def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl, w_sfl_g
     else:
         # 退出或抛出错误
         exit('Error: unrecognized model in train_client')
+    
+    # 获取当前客户端的类别信息
+    user_classes = client_classes.get(user_idx, None) if client_classes else None
+    
     # print(f"CLIENT_{user_idx} TRAIN")
     # --- 训练分层模型 (HFL) ---
-    local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx])
+    local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
     local_net_hfl.load_state_dict(w_input_hfl)
     w_hfl, loss_hfl = local.train(net=local_net_hfl.to(args.device))
     # print(f"CLIENT_{user_idx} TRAINing")
     # --- 训练单层模型 (SFL) ---
+    local_sfl = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
     local_net_sfl.load_state_dict(w_sfl_global)
-    w_sfl, loss_sfl = local.train(net=local_net_sfl.to(args.device))
-    print(f"CLIENT_{user_idx} END")
+    w_sfl, loss_sfl = local_sfl.train(net=local_net_sfl.to(args.device))
+    # print(f"CLIENT_{user_idx} END")
 
     # 返回结果，包括 user_idx 以便后续排序
     return user_idx, copy.deepcopy(w_hfl), loss_hfl, copy.deepcopy(w_sfl), loss_sfl
@@ -275,7 +194,30 @@ if __name__ == '__main__':
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
 
-    dataset_train, dataset_test, dict_users = get_data(args)
+    dataset_train, dataset_test, dict_users, client_classes = get_data(args)
+
+    # 打印 FedRS 配置信息
+    if args.method == 'fedrs':
+        print("\n" + "="*50)
+        print("FedRS 算法配置信息")
+        print("="*50)
+        print(f"联邦学习方法: {args.method}")
+        print(f"FedRS Alpha 参数: {args.fedrs_alpha}")
+        print(f"最小本地训练轮次: {args.min_le}")
+        print(f"最大本地训练轮次: {args.max_le}")
+        
+        # 统计客户端类别分布
+        class_counts = {}
+        for client_id, classes in client_classes.items():
+            num_classes = len(classes)
+            class_counts[num_classes] = class_counts.get(num_classes, 0) + 1
+        
+        print("\n客户端类别分布统计:")
+        for num_classes, count in sorted(class_counts.items()):
+            print(f"  拥有 {num_classes} 个类别的客户端数量: {count}")
+        print("="*50 + "\n")
+    else:
+        print(f"\n使用联邦学习方法: {args.method}\n")
 
     net_glob = build_model(args, dataset_train)
 
@@ -304,10 +246,27 @@ if __name__ == '__main__':
         args, w_locals, A, dict_users, net_glob, client_label_distributions
     )
     num_EHs = B.shape[1]
+    # B =get_B(num_ESs, num_EHs)
 
     C1, C2 = build_hierarchy(A, B)
     print("C1 (一级->客户端):", C1)
     print("C2 (二级->一级):", C2)
+
+    # 打印FedRS配置信息
+    print(f"\n--- FedRS Configuration ---")
+    print(f"Method: {args.method}")
+    if args.method == 'fedrs':
+        print(f"FedRS Alpha: {args.fedrs_alpha}")
+        print(f"Min Local Epochs: {args.min_le}")
+        print(f"Max Local Epochs: {args.max_le}")
+        print("FedRS Restricted Softmax: Enabled")
+        # 打印前几个客户端的类别信息
+        print("Sample Client Class Distributions:")
+        for i in range(min(5, len(client_classes))):
+            print(f"  Client {i}: Classes {client_classes[i]}")
+    else:
+        print("FedRS: Disabled (using standard FedAvg)")
+    print("-----------------------------\n")
 
     # 创建结果保存目录
     if not os.path.exists('./results'):
@@ -366,9 +325,9 @@ if __name__ == '__main__':
     early_stop = False
 
     for epoch in range(args.epochs):
-        if early_stop:
-            print(f"HFL accuracy reached 95% at epoch {epoch - 1}. Stopping training early.")
-            break
+        # if early_stop:
+        #     print(f"HFL accuracy reached 95% at epoch {epoch - 1}. Stopping training early.")
+        #     break
 
         # HFL 模型权重分发 (Cloud -> EH)
         EHs_ws_hfl = [copy.deepcopy(w_glob_hfl) for _ in range(num_EHs)]
@@ -406,7 +365,7 @@ if __name__ == '__main__':
                     # 因为它们可能不可序列化。我们已经在工作函数内部重新构建它们。
                     task_args = (
                         args, user_idx, dataset_train, dict_users,
-                        w_locals_input_hfl[user_idx], w_glob_sfl,
+                        w_locals_input_hfl[user_idx], w_glob_sfl, client_classes
                     )
                     tasks.append(task_args)
                 print("成功创建多线程！")

@@ -8,9 +8,9 @@ def args_parser():
     parser = argparse.ArgumentParser()
     # federated arguments
     parser.add_argument('--epochs', type=int, default=10, help="rounds of training")
-    parser.add_argument('--num_users', type=int, default=100, help="number of users: K")
+    parser.add_argument('--num_users', type=int, default=50, help="number of users: K")
     parser.add_argument('--frac', type=float, default=1, help="the fraction of clients: C")##参与每轮训练的客户端比例
-    parser.add_argument('--local_ep', type=int, default=5, help="the number of local epochs: E")
+    parser.add_argument('--local_ep', type=int, default=10, help="the number of local epochs: E")
     parser.add_argument('--local_bs', type=int, default=10, help="local batch size: B")
     parser.add_argument('--bs', type=int, default=128, help="test batch size")
     parser.add_argument('--lr', type=float, default=0.01, help="learning rate")
@@ -44,12 +44,28 @@ def args_parser():
                         help="epsilon threshold for spectral clustering")
     parser.add_argument('--local_ep_init', type=int, default=1,
                         help="number of local epochs for initial model training")
+    # non-iid partitioning parameters
     parser.add_argument('--partition', type=str, default='noniid-labeldir',
                        help="data partition method: homo, noniid-labeldir, noniid-#label1-9, iid-diff-quantity")
     parser.add_argument('--beta', type=float, default=0.1,
                        help="parameter for non-iid data distribution (Dirichlet)")
     parser.add_argument('--data_path', type=str, default='../data/',
                        help="path to save dataset")
+    
+    # FedRS parameters
+    parser.add_argument('--method', type=str, default='fedavg', 
+                       help="aggregation method: fedavg, fedrs")
+    parser.add_argument('--fedrs_alpha', type=float, default=0.5, 
+                       help="hyper parameter for FedRS restricted softmax")
+    parser.add_argument('--min_le', type=int, default=1, 
+                       help="minimum number of local epochs for FedRS")
+    parser.add_argument('--max_le', type=int, default=5, 
+                       help="maximum number of local epochs for FedRS")
+
+    # Data partitioning method selection
+    parser.add_argument('--use_sampling', action='store_true',
+                       help="use sampling.py data partitioning instead of data_partition.py")
+    
     args = parser.parse_args()
 
     return args
