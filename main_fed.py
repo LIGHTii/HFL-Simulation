@@ -243,9 +243,9 @@ if __name__ == '__main__':
     # 初始化全局权重
     w_glob = net_glob.state_dict()
     num_users = args.num_users
-    num_ESs = num_users // 3
-    k2 = args.k2
-    k3 = args.k3
+    num_ESs = num_users // 2
+    k2 = args.ES_k2
+    k3 = args.EH_k3
     num_processes = args.num_processes
 
     A = get_A(num_users, num_ESs)
@@ -298,7 +298,7 @@ if __name__ == '__main__':
 
     # 生成唯一的时间戳用于文件名，包含重要参数
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    param_str = f"e{args.epochs}_u{args.num_users}_le{args.local_ep}_{args.dataset}_{args.model}_k2{args.k2}_k3{args.k3}_p{args.num_processes}"
+    param_str = f"e{args.epochs}_u{args.num_users}_le{args.local_ep}_{args.dataset}_{args.model}_k2{args.ES_k2}_k3{args.EH_k3}_p{args.num_processes}"
     if not args.iid:
         param_str += f"_beta{args.beta}"
     csv_filename = f'./results/training_results_{param_str}_{timestamp}.csv'
@@ -600,7 +600,7 @@ if __name__ == '__main__':
     print("2. HFL (Clustered B Matrix) - 使用谱聚类生成的ES-EH关联矩阵") 
     print("3. SFL (Single Layer) - 传统单层联邦学习")
     print(f"训练参数: epochs={args.epochs}, clients={args.num_users}, local_epochs={args.local_ep}")
-    print(f"层级参数: k2={args.k2} (ES层聚合轮数), k3={args.k3} (EH层聚合轮数)")
+    print(f"层级参数: k2={args.ES_k2} (ES层聚合轮数), k3={args.EH_k3} (EH层聚合轮数)")
     print(f"并行参数: num_processes={args.num_processes}")
     print(f"数据集: {args.dataset}, 模型: {args.model}, IID: {args.iid}")
     if not args.iid:
