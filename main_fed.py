@@ -293,7 +293,7 @@ if __name__ == '__main__':
 
     # 使用谱聚类生成B矩阵（替换原来的随机B矩阵）
     print("开始初始训练和谱聚类...")
-    '''
+
     # 1. 训练初始本地模型
     w_locals, client_label_distributions = train_initial_models(
         args, dataset_train, dict_users, net_glob, num_users
