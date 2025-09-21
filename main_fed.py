@@ -32,10 +32,10 @@ from models.test import test_img
 from models.cluster import (
     train_initial_models,
     aggregate_es_models, spectral_clustering_es,
+    calculate_es_label_distributions,
     visualize_es_clustering_result,
-    calculate_es_label_distributions
 )
-
+'''
 def get_data_new(dataset_type, num_clients, data_path, partition_method='homo', noniid_param=0.4):
     """
     使用新的数据划分函数获取数据
@@ -102,6 +102,28 @@ def get_data(args):
     )
     # visualize_client_data_distribution(dict_users, dataset_train, args)
     return dataset_train, dataset_test, dict_users
+'''
+
+def get_data(args):
+    if args.dataset == 'mnist':
+        trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
+        dataset_train = datasets.MNIST('../data/mnist/', train=True, download=True, transform=trans_mnist)
+        dataset_test = datasets.MNIST('../data/mnist/', train=False, download=True, transform=trans_mnist)
+        if args.iid:
+            dict_users = mnist_iid(dataset_train, args.num_users)
+        else:
+            dict_users = mnist_noniid(dataset_train, args.num_users)
+    elif args.dataset == 'cifar':
+        trans_cifar = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        dataset_train = datasets.CIFAR10('../data/cifar', train=True, download=True, transform=trans_cifar)
+        dataset_test = datasets.CIFAR10('../data/cifar', train=False, download=True, transform=trans_cifar)
+        if args.iid:
+            dict_users = cifar_iid(dataset_train, args.num_users)
+        else:
+            exit('Error: only consider IID setting in CIFAR10')
+    else:
+        exit('Error: unrecognized dataset')
+    return dataset_train, dataset_test, dict_users
 
 
 def build_model(args, dataset_train):
@@ -129,10 +151,22 @@ def build_model(args, dataset_train):
 def get_A(num_users, num_ESs):
     A = np.zeros((num_users, num_ESs), dtype=int)
 
-    # 对每一行随机选择一个索引，将该位置设为 1
-    for i in range(num_users):
-        random_index = np.random.randint(0, num_ESs)
-        A[i, random_index] = 1
+    # 每个 ES 至少要分到的用户数
+    base = num_users // num_ESs
+    # 多出来的用户数量
+    extra = num_users % num_ESs
+
+    # 用户索引
+    users = np.arange(num_users)
+    np.random.shuffle(users)  # 打乱顺序，保证随机性
+
+    start = 0
+    for es in range(num_ESs):
+        count = base + (1 if es < extra else 0)
+        assigned_users = users[start:start+count]
+        for u in assigned_users:
+            A[u, es] = 1
+        start += count
 
     return A
 
@@ -148,7 +182,7 @@ def get_A(num_users, num_ESs):
     return B'''
 
 
-def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distributions, num_EHs=None):
+def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distributions):
     """
     使用谱聚类生成 ES-EH 关联矩阵 B，并可视化聚类结果
     """
@@ -160,23 +194,14 @@ def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distribu
     # 2. 使用谱聚类获取ES-EH关联矩阵B
     B, cluster_labels = spectral_clustering_es(
         es_models,
-        num_EHs=num_EHs,  # 可以指定或设置为None自动确定
-        sigma=args.sigma,  # 从参数中获取
         epsilon=args.epsilon  # 从参数中获取
     )
 
-    # 3. 计算每个ES的标签分布
+    # 3. 计算ES的标签分布并可视化
     es_label_distributions = calculate_es_label_distributions(A, client_label_distributions)
+    visualize_es_clustering_result(es_label_distributions, cluster_labels)
 
-    # 4. 可视化ES聚类结果
-    visualize_es_clustering_result(
-        es_label_distributions=es_label_distributions,
-        cluster_labels=cluster_labels,
-        save_path='./save/es_clustering_result.png'
-    )
-
-    return B  # 只返回B矩阵
-
+    return B
 
 # ===== 根据 A、B 构造 C1 和 C2 =====
 def build_hierarchy(A, B):
@@ -259,8 +284,7 @@ if __name__ == '__main__':
     # 初始化全局权重
     w_glob = net_glob.state_dict()
     num_users = args.num_users
-    num_ESs = num_users // 5
-    num_EHs = num_ESs // 3
+    num_ESs = num_users // 3
     k2 = 2
     k3 = 2
     num_processes = 8  # min(args.num_users//3, (os.cpu_count())//3)
@@ -277,8 +301,9 @@ if __name__ == '__main__':
 
     # 2. 使用谱聚类生成B矩阵
     B = get_B_cluster(
-        args, w_locals, A, dict_users, net_glob, client_label_distributions, num_EHs
+        args, w_locals, A, dict_users, net_glob, client_label_distributions
     )
+    num_EHs = B.shape[1]
 
     C1, C2 = build_hierarchy(A, B)
     print("C1 (一级->客户端):", C1)

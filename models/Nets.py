@@ -6,7 +6,6 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-
 class MLP(nn.Module):
     def __init__(self, dim_in, dim_hidden, dim_out):
         super(MLP, self).__init__()
@@ -61,3 +60,57 @@ class CNNCifar(nn.Module):
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return x
+# ============================ 新 ============================
+class VGG11(nn.Module): # VGG-11
+    def __init__(self, args):
+        super(VGG11, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(args.num_channels, 64, kernel_size=3, padding=1),
+            nn.ReLU(True),
+            nn.MaxPool2d(2, 2),
+
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(True),
+            nn.MaxPool2d(2, 2),
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(128 * 7 * 7, 256),
+            nn.ReLU(True),
+            nn.Linear(256, args.num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        x = self.classifier(x)
+        return x
+
+from torchvision.models import resnet18
+
+class ResNet18Cifar(nn.Module): # ResNet-18（简化版）
+    def __init__(self, args):
+        super(ResNet18Cifar, self).__init__()
+        self.model = resnet18(num_classes=args.num_classes)
+
+    def forward(self, x):
+        return self.model(x)
+
+class LR(nn.Module): # 逻辑回归
+    def __init__(self, dim_in, dim_out):
+        super(LR, self).__init__()
+        self.fc = nn.Linear(dim_in, dim_out)
+
+    def forward(self, x):
+        x = x.view(-1, x.shape[1]*x.shape[2]*x.shape[3])
+        return self.fc(x)
+
+from torchvision.models import mobilenet_v2
+
+class MobileNetCifar(nn.Module):
+    def __init__(self, args):
+        super(MobileNetCifar, self).__init__()
+        self.model = mobilenet_v2(num_classes=args.num_classes)
+
+    def forward(self, x):
+        return self.model(x)
+
