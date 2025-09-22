@@ -30,6 +30,7 @@ from utils.sampling import get_data
 from utils.options import args_parser
 from utils.data_partition import get_client_datasets
 from utils.visualize_client_data import visualize_client_data_distribution
+from utils.eh_test_utils import EHTestsetGenerator, test_eh_model
 from models.Update import LocalUpdate
 from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, VGG16, MobileNetCifar, LeNet5
 from models.Fed import FedAvg, FedAvg_layered
@@ -208,9 +209,10 @@ def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl_random, 
             copy.deepcopy(w_sfl), loss_sfl)
 
 def save_results_to_csv(results, filename):
-    """Save results to CSV file for three models"""
+    """Save results to CSV file for three models, including EH-level testing results"""
     with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-        fieldnames = ['epoch', 'train_loss', 'test_loss', 'test_acc', 'model_type']
+        fieldnames = ['epoch', 'eh_round', 'es_round', 'train_loss', 'test_loss', 'test_acc', 
+                     'model_type', 'level', 'eh_idx']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         
         writer.writeheader()
@@ -287,6 +289,21 @@ if __name__ == '__main__':
     print("C2_random (二级->一级):", C2_random)
     print("C1_cluster (一级->客户端):", C1_cluster)
     print("C2_cluster (二级->一级):", C2_cluster)
+    
+    # 生成EH专属测试集
+    print("\n--- 生成EH专属测试集 ---")
+    # 为随机B矩阵生成EH专属测试集
+    eh_testsets_random, eh_label_distributions_random = EHTestsetGenerator.create_eh_testsets(
+        dataset_test, A, B_random, C1_random, C2_random, dataset_train, dict_users, visualize=True
+    )
+    
+    # 为聚类B矩阵生成EH专属测试集
+    eh_testsets_cluster, eh_label_distributions_cluster = EHTestsetGenerator.create_eh_testsets(
+        dataset_test, A, B_cluster, C1_cluster, C2_cluster, dataset_train, dict_users, visualize=True
+    )
+    
+    print(f"已生成随机B矩阵的 {len(eh_testsets_random)} 个EH专属测试集")
+    print(f"已生成聚类B矩阵的 {len(eh_testsets_cluster)} 个EH专属测试集")
 
     # 打印FedRS配置信息
     print(f"\n--- FedRS Configuration ---")
@@ -330,10 +347,14 @@ if __name__ == '__main__':
     for model_name in ['HFL_Random_B', 'HFL_Cluster_B', 'SFL']:
         results_history.append({
             'epoch': -1,
+            'eh_round': 0,
+            'es_round': 0,
             'train_loss': 0.0,  # 初始训练损失暂时设为0
             'test_loss': loss_init,
             'test_acc': acc_init,
-            'model_type': model_name
+            'model_type': model_name,
+            'level': 'Global',
+            'eh_idx': -1
         })
 
     # 保存初始结果到CSV
@@ -468,6 +489,92 @@ if __name__ == '__main__':
             # HFL 聚合 (ES -> EH)
             EHs_ws_hfl_random = FedAvg_layered(ESs_ws_input_hfl_random, C2_random)
             EHs_ws_hfl_cluster = FedAvg_layered(ESs_ws_input_hfl_cluster, C2_cluster)
+            
+            # --- 在每次EH聚合后测试EH模型在专属测试集上的性能 ---
+            print(f"\n[EH Testing] Epoch {epoch} | EH_Round {t3+1}/{k3} - 测试EH模型性能...")
+            
+            # 创建临时模型对象来加载EH权重并进行测试
+            eh_results_random = []
+            eh_results_cluster = []
+            
+            # 测试每个EH的模型性能（在随机B矩阵情况下）
+            for eh_idx, eh_weights in enumerate(EHs_ws_hfl_random):
+                if eh_weights is not None and eh_idx in eh_testsets_random:
+                    # 创建临时模型并加载权重
+                    temp_model = build_model(args, dataset_train)
+                    temp_model.load_state_dict(eh_weights)
+                    temp_model.eval()
+                    
+                    # 在EH专属测试集上测试模型
+                    eh_acc, eh_loss = test_eh_model(temp_model, dataset_test, eh_testsets_random[eh_idx], args)
+                    
+                    # 记录结果
+                    eh_results_random.append({
+                        'epoch': epoch,
+                        'eh_round': t3 + 1,
+                        'es_round': k2,  # ES轮次已结束
+                        'train_loss': 0.0,  # EH级别没有训练损失
+                        'test_loss': eh_loss,
+                        'test_acc': eh_acc,
+                        'model_type': 'HFL_Random_B',
+                        'level': 'EH',
+                        'eh_idx': eh_idx
+                    })
+                    
+                    print(f"  [Random] EH {eh_idx}: Acc {eh_acc:.2f}%, Loss {eh_loss:.4f}")
+            
+            # 测试每个EH的模型性能（在聚类B矩阵情况下）
+            for eh_idx, eh_weights in enumerate(EHs_ws_hfl_cluster):
+                if eh_weights is not None and eh_idx in eh_testsets_cluster:
+                    # 创建临时模型并加载权重
+                    temp_model = build_model(args, dataset_train)
+                    temp_model.load_state_dict(eh_weights)
+                    temp_model.eval()
+                    
+                    # 在EH专属测试集上测试模型
+                    eh_acc, eh_loss = test_eh_model(temp_model, dataset_test, eh_testsets_cluster[eh_idx], args)
+                    
+                    # 记录结果
+                    eh_results_cluster.append({
+                        'epoch': epoch,
+                        'eh_round': t3 + 1,
+                        'es_round': k2,  # ES轮次已结束
+                        'train_loss': 0.0,  # EH级别没有训练损失
+                        'test_loss': eh_loss,
+                        'test_acc': eh_acc,
+                        'model_type': 'HFL_Cluster_B',
+                        'level': 'EH',
+                        'eh_idx': eh_idx
+                    })
+                    
+                    print(f"  [Cluster] EH {eh_idx}: Acc {eh_acc:.2f}%, Loss {eh_loss:.4f}")
+            
+            # 测试SFL全局模型（在全局测试集上）
+            net_glob_sfl.eval()
+            acc_sfl, loss_sfl = test_img(net_glob_sfl, dataset_test, args)
+            
+            # 记录SFL模型结果
+            sfl_result = {
+                'epoch': epoch,
+                'eh_round': t3 + 1,
+                'es_round': k2,
+                'train_loss': 0.0,  # 使用0.0作为占位符
+                'test_loss': loss_sfl,
+                'test_acc': acc_sfl,
+                'model_type': 'SFL',
+                'level': 'Global',
+                'eh_idx': -1  # 全局模型没有EH索引
+            }
+            
+            print(f"  [SFL Global]: Acc {acc_sfl:.2f}%, Loss {loss_sfl:.4f}")
+            
+            # 将EH测试结果添加到结果历史中
+            results_history.extend(eh_results_random)
+            results_history.extend(eh_results_cluster)
+            results_history.append(sfl_result)
+            
+            # 每次EH测试后更新CSV文件
+            save_results_to_csv(results_history, csv_filename)
 
         # HFL 全局聚合 (EH -> Cloud)
         w_glob_hfl_random = FedAvg(EHs_ws_hfl_random)
@@ -500,24 +607,36 @@ if __name__ == '__main__':
         current_epoch_results = [
             {
                 'epoch': epoch,
+                'eh_round': k3,  # 完整的EH轮次
+                'es_round': k2,  # 完整的ES轮次
                 'train_loss': loss_avg_hfl_random,
                 'test_loss': loss_hfl_random,
                 'test_acc': acc_hfl_random,
-                'model_type': 'HFL_Random_B'
+                'model_type': 'HFL_Random_B',
+                'level': 'Global',
+                'eh_idx': -1
             },
             {
                 'epoch': epoch,
+                'eh_round': k3,  # 完整的EH轮次
+                'es_round': k2,  # 完整的ES轮次
                 'train_loss': loss_avg_hfl_cluster,
                 'test_loss': loss_hfl_cluster,
                 'test_acc': acc_hfl_cluster,
-                'model_type': 'HFL_Cluster_B'
+                'model_type': 'HFL_Cluster_B',
+                'level': 'Global',
+                'eh_idx': -1
             },
             {
                 'epoch': epoch,
+                'eh_round': k3,  # 完整的EH轮次
+                'es_round': k2,  # 完整的ES轮次
                 'train_loss': loss_avg_sfl,
                 'test_loss': loss_sfl,
                 'test_acc': acc_sfl,
-                'model_type': 'SFL'
+                'model_type': 'SFL',
+                'level': 'Global',
+                'eh_idx': -1
             }
         ]
         
@@ -559,8 +678,54 @@ if __name__ == '__main__':
     acc_test_final_sfl, loss_test_final_sfl = test_img(net_glob_sfl, dataset_test, args)
     print(f"SFL Model (Single Layer) - Training accuracy: {acc_train_sfl:.2f}%, Testing accuracy: {acc_test_final_sfl:.2f}%")
 
-    # 保存最终结果
+    # 保存最终结果（添加到结果历史列表中）
+    final_epoch = args.epochs  # 使用一个额外的epoch号来表示最终结果
+    
+    # 添加最终结果到结果历史列表
     final_results = [
+        {
+            'epoch': final_epoch,
+            'eh_round': k3,
+            'es_round': k2,
+            'train_loss': loss_train_final_hfl_random,
+            'test_loss': loss_test_final_hfl_random,
+            'test_acc': acc_test_final_hfl_random,
+            'model_type': 'HFL_Random_B',
+            'level': 'Final',
+            'eh_idx': -1
+        },
+        {
+            'epoch': final_epoch,
+            'eh_round': k3,
+            'es_round': k2,
+            'train_loss': loss_train_final_hfl_cluster,
+            'test_loss': loss_test_final_hfl_cluster,
+            'test_acc': acc_test_final_hfl_cluster,
+            'model_type': 'HFL_Cluster_B',
+            'level': 'Final',
+            'eh_idx': -1
+        },
+        {
+            'epoch': final_epoch,
+            'eh_round': k3,
+            'es_round': k2,
+            'train_loss': loss_train_final_sfl,
+            'test_loss': loss_test_final_sfl,
+            'test_acc': acc_test_final_sfl,
+            'model_type': 'SFL',
+            'level': 'Final',
+            'eh_idx': -1
+        }
+    ]
+    
+    # 将最终结果添加到结果历史中
+    results_history.extend(final_results)
+    
+    # 重新保存整个结果历史到CSV文件
+    save_results_to_csv(results_history, csv_filename)
+    
+    # 将最终结果单独保存到CSV文件（为了兼容性）
+    final_summary = [
         {
             'model_type': 'HFL_Random_B',
             'final_train_acc': acc_train_hfl_random,
@@ -584,13 +749,13 @@ if __name__ == '__main__':
         }
     ]
 
-    # 将最终结果追加到CSV文件
+    # 将最终汇总结果追加到CSV文件
     with open(csv_filename, 'a', newline='', encoding='utf-8') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow([])  # 空行分隔
-        writer.writerow(['Final Results'])
+        writer.writerow(['Final Summary'])
         writer.writerow(['model_type', 'final_train_acc', 'final_train_loss', 'final_test_acc', 'final_test_loss'])
-        for result in final_results:
+        for result in final_summary:
             writer.writerow([result['model_type'], result['final_train_acc'], 
                             result['final_train_loss'], result['final_test_acc'], result['final_test_loss']])
 
