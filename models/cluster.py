@@ -33,23 +33,51 @@ def getW(data):
     """获得对称的权重矩阵 (这里直接用距离矩阵)"""
     return get_dist_matrix(data)
 
+def getD(W):
+    """
+    计算图的度矩阵 D，W 是邻接矩阵
+    """
+    # 计算每一行的和，得到每个节点的度数
+    degrees = np.sum(W, axis=1)
 
-def getEigen(W, cluster_num):
+    # 创建度矩阵，度数作为对角线元素
+    D = np.diag(degrees)
+
+    return D
+
+
+def normalize_W(W):
+    """
+    标准化邻接矩阵 W，使用公式 W_标准化 = D^(-1/2) W D^(-1/2)
+    """
+    # 计算度矩阵 D
+    D = getD(W)
+
+    # 计算 D^(-1/2)，即度矩阵的平方根的逆
+    D_inv_sqrt = np.linalg.inv(np.sqrt(D))
+
+    # 计算 W_标准化
+    W_normalized = D_inv_sqrt @ W @ D_inv_sqrt
+
+    return W_normalized
+
+
+def getEigen(W_normalized, cluster_num):
     """
     获得距离矩阵 W 的前 cluster_num 个最小特征值对应的特征向量
     """
-    eigval, eigvec = np.linalg.eig(W)
+    eigval, eigvec = np.linalg.eig(W_normalized)
     idx = np.argsort(eigval.real)  # 按实部 从小到大排序
     selected_idx = idx[:cluster_num]  # 改为取最小的 cluster_num 个特征值
     return eigvec[:, selected_idx].real
 
 
-def spectralPartitionGraph(W, cluster_num):
+def spectralPartitionGraph(W_normalized, cluster_num):
     """
     使用距离矩阵 W 进行谱聚类
     """
     # 获取特征向量
-    eigvec = getEigen(W, cluster_num)
+    eigvec = getEigen(W_normalized, cluster_num)
 
     # 标准化特征向量
     norms = np.linalg.norm(eigvec, axis=1, keepdims=True)
@@ -84,6 +112,7 @@ def find_optimal_clusters_binary_search(data, epsilon=None, max_clusters=None):
 
     # 计算距离矩阵
     W = getW(data)
+    W_normalized = normalize_W(W)
 
     # 全局方差作为参考
     global_centroid = np.mean(data, axis=0)
@@ -100,7 +129,7 @@ def find_optimal_clusters_binary_search(data, epsilon=None, max_clusters=None):
 
     while min_clusters <= max_clusters:
         mid_clusters = (min_clusters + max_clusters) // 2
-        labels = spectralPartitionGraph(W, mid_clusters)
+        labels = spectralPartitionGraph(W_normalized, mid_clusters)
         intra_distance = calculate_intra_cluster_distance(data, labels, mid_clusters)
 
         search_history.append((mid_clusters, intra_distance))
@@ -114,7 +143,7 @@ def find_optimal_clusters_binary_search(data, epsilon=None, max_clusters=None):
 
     if best_labels is None:
         best_clusters = max_clusters
-        best_labels = spectralPartitionGraph(W, best_clusters)
+        best_labels = spectralPartitionGraph(W_normalized, best_clusters)
         print(f"未找到满足条件的簇数，使用最大簇数: {best_clusters}")
 
     if search_history:
@@ -403,11 +432,16 @@ def train_initial_models(args, dataset_train, dict_users, net_glob, num_users):
     client_label_distributions = []  # 存储每个客户端的标签分布
 
     print("Training initial local models for graph construction...")
+    print(f"使用谱聚类学习率: {args.lr_init}")
 
+    # 创建一个临时args对象，使用不同的学习率
+    temp_args = copy.deepcopy(args)
+    temp_args.lr = args.lr_init  # 使用谱聚类专用学习率
+    
     for user_idx in range(num_users):
-        # 创建本地更新实例
+        # 创建本地更新实例，使用谱聚类专用学习率
         local = LocalUpdate(
-            args=args,
+            args=temp_args,  # 使用修改后的参数
             dataset=dataset_train,
             idxs=dict_users[user_idx]
         )
