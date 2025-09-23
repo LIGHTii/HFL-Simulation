@@ -55,7 +55,7 @@ class CNNMnist(nn.Module):
 class CNNCifar(nn.Module):
     def __init__(self, args):
         super(CNNCifar, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
+        self.conv1 = nn.Conv2d(args.num_channels, 6, 5)  # 支持动态通道数
         self.pool = nn.MaxPool2d(2, 2)
         self.conv2 = nn.Conv2d(6, 16, 5)
         self.fc1 = nn.Linear(16 * 5 * 5, 120)
@@ -71,21 +71,38 @@ class CNNCifar(nn.Module):
         x = self.fc3(x)
         return x
 # ============================ 新 ============================
-class VGG11(nn.Module):  # VGG11 适配 CIFAR10 (3通道, 32x32)
+class VGG11(nn.Module):  # 【推荐】增强版VGG11 - 快速且适合CIFAR-100
     def __init__(self, args):
         super(VGG11, self).__init__()
         self.features = nn.Sequential(
+            # Block 1
             nn.Conv2d(args.num_channels, 64, kernel_size=3, padding=1),
+            nn.ReLU(True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.ReLU(True),
             nn.MaxPool2d(2, 2),  # 32 -> 16
 
+            # Block 2
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.ReLU(True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.ReLU(True),
             nn.MaxPool2d(2, 2),  # 16 -> 8
+
+            # Block 3 (增强版)
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.ReLU(True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(True),
+            nn.MaxPool2d(2, 2),  # 8 -> 4
         )
         self.classifier = nn.Sequential(
-            nn.Linear(128 * 8 * 8, 256),  # CIFAR10 -> 128*8*8
+            nn.Linear(256 * 4 * 4, 512),
             nn.ReLU(True),
+            nn.Dropout(0.5),
+            nn.Linear(512, 256),
+            nn.ReLU(True),
+            nn.Dropout(0.3),
             nn.Linear(256, args.num_classes),
         )
 
@@ -95,36 +112,20 @@ class VGG11(nn.Module):  # VGG11 适配 CIFAR10 (3通道, 32x32)
         x = self.classifier(x)
         return x
 
-class VGG16(nn.Module): # ImageNet (224×224×3)
-    def __init__(self, args):
-        super(VGG16, self).__init__()
-        self.model = vgg16(num_classes=args.num_classes)
-
-    ''' 修改第一层卷积以适配 CIFAR (32x32, 3 通道)
-        self.model.features[0] = nn.Conv2d(
-            in_channels=3, 
-            out_channels=64, 
-            kernel_size=3,  # 原来是 3x3
-            stride=1,       # CIFAR 不能下采样太快
-            padding=1
-        )'''
-    def forward(self, x):
-        return self.model(x)
-
 
 class ResNet18(nn.Module): # ResNet-18（简化版） ImageNet 数据集（224×224 像素）
     def __init__(self, args):
         super(ResNet18, self).__init__()
         self.model = resnet18(num_classes=args.num_classes)
-        '''若要适配CIFAR数据集（32×32像素），将第一个卷积层从 7x7 改为 3x3，步长从 2 改为 1，padding 从 3 改为 1
+        #若要适配CIFAR数据集（32×32像素），将第一个卷积层从 7x7 改为 3x3，步长从 2 改为 1，padding 从 3 改为 1
         self.model.conv1 = nn.Conv2d(
-            in_channels=3, 
+            in_channels=args.num_channels,  # 支持动态通道数
             out_channels=64, 
             kernel_size=3,  # 原 7
             stride=1,       # 原 2
             padding=1,      # 原 3
             bias=False
-        )'''
+        )
     def forward(self, x):
         return self.model(x)
 
@@ -142,15 +143,15 @@ class MobileNetCifar(nn.Module): # ImageNet (224×224×3)
         super(MobileNetCifar, self).__init__()
         # 使用 torchvision 的 mobilenet_v2
         self.model = models.mobilenet_v2(num_classes=args.num_classes)
-        ''' 若CIFAR:修改第一层卷积: kernel_size=3, stride=1, padding=1，避免过快下采样
+        #若CIFAR:修改第一层卷积: kernel_size=3, stride=1, padding=1，避免过快下采样
         self.model.features[0][0] = nn.Conv2d(
-            in_channels=3,
+            in_channels=args.num_channels,  # 支持动态通道数
             out_channels=32,
             kernel_size=3,
             stride=1,
             padding=1,
             bias=False
-        )'''
+        )
     def forward(self, x):
         return self.model(x)
 

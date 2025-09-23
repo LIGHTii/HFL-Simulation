@@ -24,11 +24,14 @@ class EHTestsetGenerator:
             label_distribution: 标签分布数组，形状为 (num_classes,)
         """
         # 初始化标签分布计数
+        # 自动获取正确类别数
         if hasattr(dataset, 'targets'):
-            num_classes = len(set(dataset.targets))
+            # 转换为numpy数组便于计算
+            targets = dataset.targets.numpy() if isinstance(dataset.targets, torch.Tensor) else dataset.targets
+            num_classes = int(np.max(targets)) + 1  # 最大标签值+1（如MNIST最大是9，9+1=10）
         else:
-            # 对于MNIST数据集
-            num_classes = len(set(dataset.train_labels.numpy()))
+            targets = dataset.train_labels.numpy()
+            num_classes = int(np.max(targets)) + 1
         
         label_distribution = np.zeros(num_classes)
         
@@ -107,10 +110,16 @@ class EHTestsetGenerator:
                 dataset_train, dict_users, client_indices
             )
         
-        # 创建每个EH的专属测试集（允许重复采样和适度分布偏差）
+        # 创建每个EH的专属测试集
         eh_testsets = {}
         
-        # 按照标签分布比例为每个EH采样测试数据（允许重复采样和适度偏差）
+        # 按类别索引测试数据
+        test_indices_by_class = {}
+        for c in range(num_classes):
+            test_indices_by_class[c] = np.where(test_labels == c)[0]
+            np.random.shuffle(test_indices_by_class[c])
+        
+        # 按照标签分布比例为每个EH采样测试数据
         test_size_per_eh = len(dataset_test) // num_EHs  # 每个EH获得的测试集大小
         
         for eh_idx, label_dist in eh_label_distributions.items():
@@ -121,38 +130,37 @@ class EHTestsetGenerator:
             smoothed_dist = label_dist + epsilon
             smoothed_dist = smoothed_dist / smoothed_dist.sum()
             
-            # 按类别采样（允许重复采样，确保每个EH都能获得合理分布）
+            # 按类别采样
             for c in range(num_classes):
                 # 根据标签分布计算该类别应采样的样本数
-                desired_samples = int(test_size_per_eh * smoothed_dist[c])
+                num_samples = int(test_size_per_eh * smoothed_dist[c])
                 
-                # 从该类别的所有测试样本中随机采样（允许与其他EH重复）
-                available_indices = np.where(test_labels == c)[0]
+                # 确保不超过该类别的可用样本数
+                available = len(test_indices_by_class[c])
+                num_samples = min(num_samples, available)
                 
-                if len(available_indices) > 0 and desired_samples > 0:
-                    # 允许重复采样，确保每个EH都能按理想分布获得样本
-                    if desired_samples <= len(available_indices):
-                        selected_indices = np.random.choice(available_indices, desired_samples, replace=False)
-                    else:
-                        # 如果需要的样本数超过可用样本，则全部使用并允许重复
-                        selected_indices = np.random.choice(available_indices, desired_samples, replace=True)
-                    
+                # 从该类别中采样
+                if num_samples > 0:
+                    selected_indices = test_indices_by_class[c][:num_samples]
+                    test_indices_by_class[c] = test_indices_by_class[c][num_samples:]  # 更新剩余样本
                     testset_indices.extend(selected_indices)
             
-            # 如果采样的样本数不足，用随机样本补充（保持分布的灵活性）
+            # 为了确保每个EH有足够多的测试样本，如果不足，从剩余样本中随机补充
             remaining_needed = test_size_per_eh - len(testset_indices)
             if remaining_needed > 0:
-                # 从全部测试样本中随机补充，允许适度偏差
-                all_test_indices = np.arange(len(dataset_test))
-                additional_indices = np.random.choice(all_test_indices, remaining_needed, replace=False)
-                testset_indices.extend(additional_indices)
-            elif len(testset_indices) > test_size_per_eh:
-                # 如果超出目标大小，随机移除一些样本
-                testset_indices = np.random.choice(testset_indices, test_size_per_eh, replace=False)
+                remaining_indices = []
+                for c in range(num_classes):
+                    remaining_indices.extend(test_indices_by_class[c])
+                
+                # 如果还有足够的剩余样本，则随机补充
+                if len(remaining_indices) >= remaining_needed:
+                    np.random.shuffle(remaining_indices)
+                    testset_indices.extend(remaining_indices[:remaining_needed])
+                else:
+                    # 如果剩余样本不足，则使用所有剩余样本
+                    testset_indices.extend(remaining_indices)
             
             eh_testsets[eh_idx] = np.array(testset_indices)
-            
-            print(f"EH {eh_idx}: 生成 {len(eh_testsets[eh_idx])} 个测试样本，目标分布偏差允许范围内")
         
         # 可视化EH的标签分布和对应的测试集分布
         if visualize:
@@ -193,7 +201,8 @@ class EHTestsetGenerator:
             # 检查数据维度
             for eh_idx in sorted(eh_label_distributions.keys()):
                 if len(eh_label_distributions[eh_idx]) != num_classes:
-                    print(f"警告：EH {eh_idx} 标签分布维度 {len(eh_label_distributions[eh_idx])} 与类别数 {num_classes} 不匹配")
+                    print(
+                        f"警告：EH {eh_idx} 标签分布维度 {len(eh_label_distributions[eh_idx])} 与类别数 {num_classes} 不匹配")
                     # 修复维度问题，填充为零向量
                     corrected_dist = np.zeros(num_classes)
                     for i in range(min(len(eh_label_distributions[eh_idx]), num_classes)):
@@ -301,7 +310,7 @@ def test_eh_model(net, dataset_test, eh_test_indices, args):
             # 计算准确率
             pred = output.argmax(dim=1, keepdim=True)
             correct += pred.eq(target.view_as(pred)).sum().item()
-    
+
     # 计算平均损失和准确率
     test_loss /= len(eh_testset)
     accuracy = 100. * correct / len(eh_testset)
