@@ -6,6 +6,11 @@ import os
 import numpy as np
 from torchvision import datasets, transforms
 from utils.data_partition import get_client_datasets
+from utils.data_persistence import (
+    save_client_data_distribution, 
+    load_client_data_distribution,
+    print_available_data_files
+)
 
 
 def mnist_iid(dataset, num_users):
@@ -130,26 +135,49 @@ def get_data_new(dataset_type, num_clients, data_path, partition_method='homo', 
     return get_client_datasets(dataset_type, num_clients, data_path, partition_method, noniid_param)
 
 def get_data(args):
-    """兼容原有接口的数据获取函数"""
+    """兼容原有接口的数据获取函数，支持数据保存和加载"""
+    
+    # 首先检查是否需要从文件加载数据
+    if hasattr(args, 'load_data') and args.load_data:
+        print(f"\n🔄 尝试从文件加载客户端数据: {args.load_data}")
+        
+        # 如果指定了相对路径，尝试在数据保存目录中查找
+        if not os.path.isabs(args.load_data):
+            save_dir = getattr(args, 'data_save_dir', './saved_data/')
+            full_path = os.path.join(save_dir, args.load_data)
+            if os.path.exists(full_path):
+                args.load_data = full_path
+        
+        # 创建数据集对象（用于兼容性）
+        dataset_train, dataset_test = create_dataset_objects(args)
+        
+        # 尝试加载数据
+        dict_users, client_classes = load_client_data_distribution(args.load_data, args)
+        
+        if dict_users is not None and client_classes is not None:
+            print("✅ 成功从文件加载客户端数据分配")
+            return dataset_train, dataset_test, dict_users, client_classes
+        else:
+            print("❌ 从文件加载数据失败，将重新生成数据")
+    
+    # 如果指定了--load_data但没有提供具体路径，显示可用文件
+    if hasattr(args, 'load_data') and args.load_data == '':
+        save_dir = getattr(args, 'data_save_dir', './saved_data/')
+        print_available_data_files(save_dir)
+        exit("请指定要加载的数据文件路径")
 
+    print("\n🔨 生成新的客户端数据分配...")
+    
+    # 创建数据集对象
+    dataset_train, dataset_test = create_dataset_objects(args)
+    
     # 确定数据集类型和路径
     if args.dataset == 'mnist':
         dataset_type = 'mnist'
         data_path = os.path.join(args.data_path, 'mnist/')
-        # 创建兼容的数据集对象
-        trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        dataset_train = datasets.MNIST(data_path, train=True, download=True, transform=trans_mnist)
-        dataset_test = datasets.MNIST(data_path, train=False, download=True, transform=trans_mnist)
-
     elif args.dataset == 'cifar':
         dataset_type = 'cifar10'
         data_path = os.path.join(args.data_path, 'cifar/')
-        # 创建兼容的数据集对象
-        trans_cifar = transforms.Compose(
-            [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-        dataset_train = datasets.CIFAR10(data_path, train=True, download=True, transform=trans_cifar)
-        dataset_test = datasets.CIFAR10(data_path, train=False, download=True, transform=trans_cifar)
-
     else:
         exit('Error: unrecognized dataset')
 
@@ -178,8 +206,6 @@ def get_data(args):
         # 计算客户端类别信息（用于FedRS）
         client_classes = get_client_classes_from_sampling(dataset_train, dict_users)
 
-        return dataset_train, dataset_test, dict_users, client_classes
-
     else:
         # 使用原有的数据划分方法
         # 确定分区方法 - 优先使用新的partition参数
@@ -204,8 +230,42 @@ def get_data(args):
         train_data, test_data, dict_users, client_classes = get_data_new(
             dataset_type, args.num_users, data_path, partition_method, noniid_param
         )
-        # visualize_client_data_distribution(dict_users, dataset_train, args)
-        return dataset_train, dataset_test, dict_users, client_classes
+    
+    # 检查是否需要保存数据
+    if hasattr(args, 'save_data') and args.save_data:
+        print("\n💾 保存客户端数据分配...")
+        save_client_data_distribution(dict_users, client_classes, args)
+    
+    return dataset_train, dataset_test, dict_users, client_classes
+
+
+def create_dataset_objects(args):
+    """
+    创建数据集对象
+    
+    Args:
+        args: 命令行参数对象
+    
+    Returns:
+        tuple: (dataset_train, dataset_test)
+    """
+    if args.dataset == 'mnist':
+        data_path = os.path.join(args.data_path, 'mnist/')
+        trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
+        dataset_train = datasets.MNIST(data_path, train=True, download=True, transform=trans_mnist)
+        dataset_test = datasets.MNIST(data_path, train=False, download=True, transform=trans_mnist)
+
+    elif args.dataset == 'cifar':
+        data_path = os.path.join(args.data_path, 'cifar/')
+        trans_cifar = transforms.Compose(
+            [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        dataset_train = datasets.CIFAR10(data_path, train=True, download=True, transform=trans_cifar)
+        dataset_test = datasets.CIFAR10(data_path, train=False, download=True, transform=trans_cifar)
+
+    else:
+        exit('Error: unrecognized dataset')
+    
+    return dataset_train, dataset_test
 
 
 if __name__ == '__main__':
