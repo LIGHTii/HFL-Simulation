@@ -97,6 +97,44 @@ def cifar_noniid_adapted(dataset, num_users):
 
     return dict_users
 
+def cifar100_iid(dataset, num_users):
+    """
+    Sample I.I.D. client data from CIFAR100 dataset
+    """
+    num_items = int(len(dataset) / num_users)
+    dict_users, all_idxs = {}, [i for i in range(len(dataset))]
+    for i in range(num_users):
+        dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
+        all_idxs = list(set(all_idxs) - dict_users[i])
+    return dict_users
+
+# 新增: CIFAR-100 Non-IID (适配自 mnist_noniid)
+def cifar100_noniid_adapted(dataset, num_users):
+    """
+    CIFAR-100数据集的Non-IID划分，基于MNIST Non-IID方法适配
+    将100个类别划分为200个分片，每个客户端分配2个分片 (CIFAR-100 train: 50000图像)
+    """
+    num_shards, num_imgs = 500, 100  # 200 shards * 250 imgs = 50000
+    idx_shard = [i for i in range(num_shards)]
+    dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}
+    idxs = np.arange(num_shards * num_imgs)
+    labels = np.array(dataset.targets)
+
+    # 按标签排序
+    idxs_labels = np.vstack((idxs, labels))
+    idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
+    idxs = idxs_labels[0, :]
+
+    # 为每个客户端随机分配2个分片
+    for i in range(num_users):
+        rand_set = set(np.random.choice(idx_shard, 5, replace=False))
+        idx_shard = list(set(idx_shard) - rand_set)
+        for rand in rand_set:
+            dict_users[i] = np.concatenate(
+                (dict_users[i], idxs[rand * num_imgs:(rand + 1) * num_imgs]), axis=0)
+
+    return dict_users
+
 
 def get_client_classes_from_sampling(dataset, dict_users):
     """
@@ -178,6 +216,9 @@ def get_data(args):
     elif args.dataset == 'cifar':
         dataset_type = 'cifar10'
         data_path = os.path.join(args.data_path, 'cifar/')
+    elif args.dataset == 'cifar100':
+        dataset_type = 'cifar100'
+        data_path = os.path.join(args.data_path, 'cifar100/')
     else:
         exit('Error: unrecognized dataset')
 
@@ -202,6 +243,14 @@ def get_data(args):
                 # 对于 CIFAR，如果没有 cifar_noniid 函数，使用修改版的 mnist_noniid
                 print("警告: CIFAR 使用修改版的 Non-IID 划分")
                 dict_users = cifar_noniid_adapted(dataset_train, args.num_users)
+        elif args.dataset == 'cifar100':  # 新增
+            if args.iid:
+                dict_users = cifar100_iid(dataset_train, args.num_users)
+                print("使用 CIFAR100 IID 数据划分")
+            else:
+                dict_users = cifar100_noniid_adapted(dataset_train, args.num_users)
+                print("使用 CIFAR100 Non-IID 数据划分")
+
 
         # 计算客户端类别信息（用于FedRS）
         client_classes = get_client_classes_from_sampling(dataset_train, dict_users)
@@ -261,6 +310,15 @@ def create_dataset_objects(args):
             [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
         dataset_train = datasets.CIFAR10(data_path, train=True, download=True, transform=trans_cifar)
         dataset_test = datasets.CIFAR10(data_path, train=False, download=True, transform=trans_cifar)
+    
+    elif args.dataset == 'cifar100':
+
+        data_path = os.path.join(args.data_path, 'cifar100/')
+        trans_cifar100 = transforms.Compose(
+            [transforms.ToTensor(),
+             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        dataset_train = datasets.CIFAR100(data_path, train=True, download=True, transform=trans_cifar100)
+        dataset_test = datasets.CIFAR100(data_path, train=False, download=True, transform=trans_cifar100)
 
     else:
         exit('Error: unrecognized dataset')
