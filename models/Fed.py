@@ -8,6 +8,7 @@ from torch import nn
 
 from .shamir import use_shamir
 
+
 def FedAvg(w):
     if not w or all(w_i is None or not w_i for w_i in w):
         print("Error: No valid models for FedAvg aggregation")
@@ -30,8 +31,20 @@ def FedAvg(w):
             print(f"Warning: No valid models for key {k}")
     return w_avg
 
-def FedAvg_layered(w, C):
-    num_groups = len(C)
+
+def FedAvg_layered(w, C, dict_users=None):
+    """
+    Aggregates weights for a layer (e.g., Clients to ES or ES to CH).
+    :param w: List of weights from clients or edge servers.
+    :param C: Dictionary mapping indices to lists (e.g., C1: ES -> Clients, C2: CH -> ES).
+    :param dict_users: Dictionary mapping client indices to their dataset indices (optional).
+    :return: List of aggregated weights for each unit in the next layer.
+    """
+    if not w or all(w_i is None or not w_i for w_i in w):
+        print("Error: No valid models for FedAvg_layered aggregation")
+        return None
+
+    num_groups = max(C.keys()) + 1 if C else 0
     grouped_w_avg = [None] * num_groups
 
     for group_id, client_indices in C.items():
@@ -42,20 +55,25 @@ def FedAvg_layered(w, C):
         if not group_models:
             print(f"Error: No valid models for group {group_id}")
             continue
+
         w_avg = copy.deepcopy(group_models[0])
         for k in w_avg.keys():
             w_avg[k] = torch.zeros_like(w_avg[k])
-            count = 0
-            for i in range(len(group_models)):
-                if group_models[i] is not None and k in group_models[i]:
-                    w_avg[k] += group_models[i][k]
-                    count += 1
-            if count > 0:
-                w_avg[k] = torch.div(w_avg[k], count)
+            total_weight = 0
+            for i, idx in enumerate(client_indices):
+                if i < len(group_models) and group_models[i] is not None and k in group_models[i]:
+                    # Use dataset size as weight if dict_users is provided (for Client -> ES)
+                    weight = len(dict_users[idx]) if dict_users and idx in dict_users else 1
+                    w_avg[k] += group_models[i][k] * weight
+                    total_weight += weight
+            if total_weight > 0:
+                w_avg[k] = torch.div(w_avg[k], total_weight)
             else:
                 print(f"Warning: No valid models for key {k} in group {group_id}")
+
         if group_id < num_groups:
             grouped_w_avg[group_id] = w_avg
         else:
             print(f"Warning: Group ID {group_id} exceeds expected range")
+
     return grouped_w_avg
