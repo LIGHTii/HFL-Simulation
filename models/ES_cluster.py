@@ -4,8 +4,6 @@ import torch
 import copy
 from models.Update import LocalUpdate  # 导入LocalUpdate
 from models.cluster1 import cluster1
-from models.cluster2 import cluster2
-from models.cluster3 import cluster3
 # ==================================== ES聚类 ========================================
 def model_to_vector(model_params):
     """将模型参数字典转换为向量"""
@@ -128,6 +126,9 @@ def _plot_gradient_clustering_result(ax, distributions, labels, title, class_col
             current_x += 1
         current_x += 0.5  # 簇间 间隙
     x = np.array(x_positions)
+
+    # 计算每个ES的总样本数
+    total_samples = np.sum(sorted_distributions, axis=1)
 
     # 绘制堆叠柱状图 - 每个标签一个颜色
     bottom = np.zeros(len(sorted_distributions))

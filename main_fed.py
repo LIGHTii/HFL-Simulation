@@ -41,8 +41,8 @@ from models.ES_cluster import (
     calculate_es_label_distributions,
     visualize_clustering_comparison
 )
+from models.ES_cluster import run_all_clusterings
 import numpy as np
-import random
 
 
 def build_model(args, dataset_train):
@@ -136,14 +136,14 @@ def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distribu
 
     # 3. 计算ES的标签分布并可视化
     es_label_distributions = calculate_es_label_distributions(A, client_label_distributions)
-    #visualize_es_clustering_result(es_label_distributions, cluster_labels)
+
+    #labels1, labels2, labels3 = run_all_clusterings(es_models, epsilon=args.epsilon)
     # 在完成谱聚类后添加对比可视化
     visualize_clustering_comparison(
         es_label_distributions=es_label_distributions,
         cluster_labels=cluster_labels,
         save_path='./save/clustering_comparison.png'
     )
-
     return B
 
 # ===== 根据 A、B 构造 C1 和 C2 =====

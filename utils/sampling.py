@@ -110,7 +110,7 @@ def cifar100_noniid_adapted(dataset, num_users):
     CIFAR-100数据集的Non-IID划分，基于MNIST Non-IID方法适配
     将100个类别划分为200个分片，每个客户端分配2个分片 (CIFAR-100 train: 50000图像)
     """
-    num_shards, num_imgs = 200, 250  # 200 shards * 250 imgs = 50000
+    num_shards, num_imgs = 500, 100  # 200 shards * 250 imgs = 50000
     idx_shard = [i for i in range(num_shards)]
     dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}
     idxs = np.arange(num_shards * num_imgs)
@@ -123,7 +123,7 @@ def cifar100_noniid_adapted(dataset, num_users):
 
     # 为每个客户端随机分配2个分片
     for i in range(num_users):
-        rand_set = set(np.random.choice(idx_shard, 2, replace=False))
+        rand_set = set(np.random.choice(idx_shard, 5, replace=False))
         idx_shard = list(set(idx_shard) - rand_set)
         for rand in rand_set:
             dict_users[i] = np.concatenate(

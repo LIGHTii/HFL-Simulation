@@ -85,7 +85,7 @@ def find_optimal_clusters_binary_search(data, epsilon=None, max_clusters=None):
     global_variance = np.sum((data - global_centroid) ** 2)
 
     if epsilon is None:
-        epsilon = 0.65 * global_variance
+        epsilon = 0.8 * global_variance
         print(f"使用自动计算的 epsilon 阈值: {epsilon:.4f}")
 
     min_clusters = 1
