@@ -13,7 +13,8 @@ def args_parser():
     parser.add_argument('--local_ep', type=int, default=10, help="the number of local epochs: E")
     parser.add_argument('--local_bs', type=int, default=10, help="local batch size: B")
     parser.add_argument('--bs', type=int, default=128, help="test batch size")
-    parser.add_argument('--lr', type=float, default=0.01, help="learning rate")
+    parser.add_argument('--lr', type=float, default=0.01, help="learning rate for federated learning training")
+    parser.add_argument('--lr_init', type=float, default=0.01, help="learning rate for initial model training in spectral clustering")
     parser.add_argument('--momentum', type=float, default=0.5, help="SGD momentum (default: 0.5)")
     parser.add_argument('--split', type=str, default='user', help="train-test split type, user or sample")
 
@@ -73,6 +74,14 @@ def args_parser():
                        help="number of EH layer aggregation rounds")
     parser.add_argument('--num_processes', type=int, default=8,
                        help="number of parallel processes for client training")
+    
+    # Data saving and loading parameters
+    parser.add_argument('--save_data', action='store_true',
+                       help="save client data distribution to file")
+    parser.add_argument('--load_data', type=str, default=None,
+                       help="load client data distribution from specified file path")
+    parser.add_argument('--data_save_dir', type=str, default='./saved_data/',
+                       help="directory to save client data distribution files")
     
     args = parser.parse_args()
 

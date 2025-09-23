@@ -211,7 +211,7 @@ def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl_random, 
 def save_results_to_csv(results, filename):
     """Save results to CSV file for three models, including EH-level testing results"""
     with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-        fieldnames = ['epoch', 'eh_round', 'es_round', 'train_loss', 'train_acc', 'test_loss', 'test_acc', 
+        fieldnames = ['epoch', 'eh_round', 'es_round', 'train_loss', 'test_loss', 'test_acc', 
                      'model_type', 'level', 'eh_idx']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         
@@ -257,7 +257,7 @@ if __name__ == '__main__':
     # 初始化全局权重
     w_glob = net_glob.state_dict()
     num_users = args.num_users
-    num_ESs = num_users // 2
+    num_ESs = num_users // 3
     k2 = args.ES_k2
     k3 = args.EH_k3
     num_processes = args.num_processes
@@ -341,9 +341,7 @@ if __name__ == '__main__':
 
     # 测试初始模型
     acc_init, loss_init = test_img(net_glob, dataset_test, args)
-    acc_init_train, loss_init_train = test_img(net_glob, dataset_train, args)
     print(f"Initial Model - Testing accuracy: {acc_init:.2f}%, Loss: {loss_init:.4f}")
-    print(f"Initial Model - Training accuracy: {acc_init_train:.2f}%, Loss: {loss_init_train:.4f}")
 
     # 记录初始结果 - 三种模型使用相同的初始权重
     for model_name in ['HFL_Random_B', 'HFL_Cluster_B', 'SFL']:
@@ -351,8 +349,7 @@ if __name__ == '__main__':
             'epoch': -1,
             'eh_round': 0,
             'es_round': 0,
-            'train_loss': loss_init_train,
-            'train_acc': acc_init_train,
+            'train_loss': 0.0,  # 初始训练损失暂时设为0
             'test_loss': loss_init,
             'test_acc': acc_init,
             'model_type': model_name,
@@ -517,7 +514,6 @@ if __name__ == '__main__':
                         'eh_round': t3 + 1,
                         'es_round': k2,  # ES轮次已结束
                         'train_loss': 0.0,  # EH级别没有训练损失
-                        'train_acc': 0.0,   # EH级别没有训练准确率
                         'test_loss': eh_loss,
                         'test_acc': eh_acc,
                         'model_type': 'HFL_Random_B',
@@ -544,7 +540,6 @@ if __name__ == '__main__':
                         'eh_round': t3 + 1,
                         'es_round': k2,  # ES轮次已结束
                         'train_loss': 0.0,  # EH级别没有训练损失
-                        'train_acc': 0.0,   # EH级别没有训练准确率
                         'test_loss': eh_loss,
                         'test_acc': eh_acc,
                         'model_type': 'HFL_Cluster_B',
@@ -564,7 +559,6 @@ if __name__ == '__main__':
                 'eh_round': t3 + 1,
                 'es_round': k2,
                 'train_loss': 0.0,  # 使用0.0作为占位符
-                'train_acc': 0.0,   # 使用0.0作为占位符
                 'test_loss': loss_sfl,
                 'test_acc': acc_sfl,
                 'model_type': 'SFL',
@@ -594,21 +588,18 @@ if __name__ == '__main__':
         net_glob_hfl_cluster.eval()
         net_glob_sfl.eval()
 
-        # 评估 HFL 随机B模型 (测试集和训练集)
+        # 评估 HFL 随机B模型
         acc_hfl_random, loss_hfl_random = test_img(net_glob_hfl_random, dataset_test, args)
-        acc_train_hfl_random_current, loss_train_hfl_random_current = test_img(net_glob_hfl_random, dataset_train, args)
         acc_test_hfl_random.append(acc_hfl_random)
         loss_test_hfl_random.append(loss_hfl_random)
 
-        # 评估 HFL 聚类B模型 (测试集和训练集)
+        # 评估 HFL 聚类B模型
         acc_hfl_cluster, loss_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_test, args)
-        acc_train_hfl_cluster_current, loss_train_hfl_cluster_current = test_img(net_glob_hfl_cluster, dataset_train, args)
         acc_test_hfl_cluster.append(acc_hfl_cluster)
         loss_test_hfl_cluster.append(loss_hfl_cluster)
 
-        # 评估 SFL 模型 (测试集和训练集)
+        # 评估 SFL 模型
         acc_sfl, loss_sfl = test_img(net_glob_sfl, dataset_test, args)
-        acc_train_sfl_current, loss_train_sfl_current = test_img(net_glob_sfl, dataset_train, args)
         acc_test_sfl.append(acc_sfl)
         loss_test_sfl.append(loss_sfl)
 
@@ -619,7 +610,6 @@ if __name__ == '__main__':
                 'eh_round': k3,  # 完整的EH轮次
                 'es_round': k2,  # 完整的ES轮次
                 'train_loss': loss_avg_hfl_random,
-                'train_acc': acc_train_hfl_random_current,
                 'test_loss': loss_hfl_random,
                 'test_acc': acc_hfl_random,
                 'model_type': 'HFL_Random_B',
@@ -631,7 +621,6 @@ if __name__ == '__main__':
                 'eh_round': k3,  # 完整的EH轮次
                 'es_round': k2,  # 完整的ES轮次
                 'train_loss': loss_avg_hfl_cluster,
-                'train_acc': acc_train_hfl_cluster_current,
                 'test_loss': loss_hfl_cluster,
                 'test_acc': acc_hfl_cluster,
                 'model_type': 'HFL_Cluster_B',
@@ -643,7 +632,6 @@ if __name__ == '__main__':
                 'eh_round': k3,  # 完整的EH轮次
                 'es_round': k2,  # 完整的ES轮次
                 'train_loss': loss_avg_sfl,
-                'train_acc': acc_train_sfl_current,
                 'test_loss': loss_sfl,
                 'test_acc': acc_sfl,
                 'model_type': 'SFL',
@@ -674,21 +662,21 @@ if __name__ == '__main__':
     
     # 测试 HFL 随机B矩阵模型
     net_glob_hfl_random.eval()
-    acc_train_hfl_random_final, loss_train_final_hfl_random = test_img(net_glob_hfl_random, dataset_train, args)
+    acc_train_hfl_random, loss_train_final_hfl_random = test_img(net_glob_hfl_random, dataset_train, args)
     acc_test_final_hfl_random, loss_test_final_hfl_random = test_img(net_glob_hfl_random, dataset_test, args)
-    print(f"HFL Model (Random B Matrix) - Training accuracy: {acc_train_hfl_random_final:.2f}%, Testing accuracy: {acc_test_final_hfl_random:.2f}%")
+    print(f"HFL Model (Random B Matrix) - Training accuracy: {acc_train_hfl_random:.2f}%, Testing accuracy: {acc_test_final_hfl_random:.2f}%")
     
     # 测试 HFL 聚类B矩阵模型
     net_glob_hfl_cluster.eval()
-    acc_train_hfl_cluster_final, loss_train_final_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_train, args)
+    acc_train_hfl_cluster, loss_train_final_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_train, args)
     acc_test_final_hfl_cluster, loss_test_final_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_test, args)
-    print(f"HFL Model (Clustered B Matrix) - Training accuracy: {acc_train_hfl_cluster_final:.2f}%, Testing accuracy: {acc_test_final_hfl_cluster:.2f}%")
+    print(f"HFL Model (Clustered B Matrix) - Training accuracy: {acc_train_hfl_cluster:.2f}%, Testing accuracy: {acc_test_final_hfl_cluster:.2f}%")
 
     # 测试 SFL 模型
     net_glob_sfl.eval()
-    acc_train_sfl_final, loss_train_final_sfl = test_img(net_glob_sfl, dataset_train, args)
+    acc_train_sfl, loss_train_final_sfl = test_img(net_glob_sfl, dataset_train, args)
     acc_test_final_sfl, loss_test_final_sfl = test_img(net_glob_sfl, dataset_test, args)
-    print(f"SFL Model (Single Layer) - Training accuracy: {acc_train_sfl_final:.2f}%, Testing accuracy: {acc_test_final_sfl:.2f}%")
+    print(f"SFL Model (Single Layer) - Training accuracy: {acc_train_sfl:.2f}%, Testing accuracy: {acc_test_final_sfl:.2f}%")
 
     # 保存最终结果（添加到结果历史列表中）
     final_epoch = args.epochs  # 使用一个额外的epoch号来表示最终结果
@@ -700,7 +688,6 @@ if __name__ == '__main__':
             'eh_round': k3,
             'es_round': k2,
             'train_loss': loss_train_final_hfl_random,
-            'train_acc': acc_train_hfl_random_final,
             'test_loss': loss_test_final_hfl_random,
             'test_acc': acc_test_final_hfl_random,
             'model_type': 'HFL_Random_B',
@@ -712,7 +699,6 @@ if __name__ == '__main__':
             'eh_round': k3,
             'es_round': k2,
             'train_loss': loss_train_final_hfl_cluster,
-            'train_acc': acc_train_hfl_cluster_final,
             'test_loss': loss_test_final_hfl_cluster,
             'test_acc': acc_test_final_hfl_cluster,
             'model_type': 'HFL_Cluster_B',
@@ -724,7 +710,6 @@ if __name__ == '__main__':
             'eh_round': k3,
             'es_round': k2,
             'train_loss': loss_train_final_sfl,
-            'train_acc': acc_train_sfl_final,
             'test_loss': loss_test_final_sfl,
             'test_acc': acc_test_final_sfl,
             'model_type': 'SFL',
@@ -743,21 +728,21 @@ if __name__ == '__main__':
     final_summary = [
         {
             'model_type': 'HFL_Random_B',
-            'final_train_acc': acc_train_hfl_random_final,
+            'final_train_acc': acc_train_hfl_random,
             'final_train_loss': loss_train_final_hfl_random,
             'final_test_acc': acc_test_final_hfl_random,
             'final_test_loss': loss_test_final_hfl_random
         },
         {
             'model_type': 'HFL_Cluster_B',
-            'final_train_acc': acc_train_hfl_cluster_final,
+            'final_train_acc': acc_train_hfl_cluster,
             'final_train_loss': loss_train_final_hfl_cluster,
             'final_test_acc': acc_test_final_hfl_cluster,
             'final_test_loss': loss_test_final_hfl_cluster
         },
         {
             'model_type': 'SFL',
-            'final_train_acc': acc_train_sfl_final,
+            'final_train_acc': acc_train_sfl,
             'final_train_loss': loss_train_final_sfl,
             'final_test_acc': acc_test_final_sfl,
             'final_test_loss': loss_test_final_sfl
