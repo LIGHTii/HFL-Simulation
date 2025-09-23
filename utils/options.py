@@ -13,8 +13,7 @@ def args_parser():
     parser.add_argument('--local_ep', type=int, default=10, help="the number of local epochs: E")
     parser.add_argument('--local_bs', type=int, default=10, help="local batch size: B")
     parser.add_argument('--bs', type=int, default=128, help="test batch size")
-    parser.add_argument('--lr', type=float, default=0.01, help="learning rate for federated learning training")
-    parser.add_argument('--lr_init', type=float, default=0.01, help="learning rate for initial model training in spectral clustering")
+    parser.add_argument('--lr', type=float, default=0.01, help="learning rate")
     parser.add_argument('--momentum', type=float, default=0.5, help="SGD momentum (default: 0.5)")
     parser.add_argument('--split', type=str, default='user', help="train-test split type, user or sample")
 
@@ -52,6 +51,7 @@ def args_parser():
                        help="parameter for non-iid data distribution (Dirichlet)")
     parser.add_argument('--data_path', type=str, default='../data/',
                        help="path to save dataset")
+
     
     # FedRS parameters
     parser.add_argument('--method', type=str, default='fedavg', 
@@ -75,14 +75,18 @@ def args_parser():
     parser.add_argument('--num_processes', type=int, default=8,
                        help="number of parallel processes for client training")
     
-    # Data saving and loading parameters
-    parser.add_argument('--save_data', action='store_true',
-                       help="save client data distribution to file")
-    parser.add_argument('--load_data', type=str, default=None,
-                       help="load client data distribution from specified file path")
-    parser.add_argument('--data_save_dir', type=str, default='./saved_data/',
-                       help="directory to save client data distribution files")
-    
     args = parser.parse_args()
+    # 动态设置num_classes和num_channels
+    if args.dataset == 'mnist':
+        args.num_classes = 10
+        args.num_channels = 1
+    elif args.dataset == 'cifar':
+        args.num_classes = 10
+        args.num_channels = 3
+    elif args.dataset == 'cifar100':
+        args.num_classes = 100  # CIFAR-100有100个类别
+        args.num_channels = 3
+    else:
+        raise ValueError(f'Unsupported dataset: {args.dataset}')
 
     return args
