@@ -32,15 +32,14 @@ from utils.data_partition import get_client_datasets
 from utils.visualize_client_data import visualize_client_data_distribution
 from utils.eh_test_utils import EHTestsetGenerator, test_eh_model
 from models.Update import LocalUpdate
-from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, VGG16, MobileNetCifar, LeNet5
+from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, MobileNetCifar, LeNet5
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
-from models.cluster import (
+from models.ES_cluster import (
     train_initial_models,
     aggregate_es_models, spectral_clustering_es,
     calculate_es_label_distributions,
     visualize_clustering_comparison
-    #visualize_es_clustering_result,
 )
 import numpy as np
 import random
@@ -49,10 +48,11 @@ import random
 def build_model(args, dataset_train):
     img_size = dataset_train[0][0].shape
 
-    if args.model == 'cnn' and args.dataset == 'cifar':
-        net_glob = CNNCifar(args=args).to(args.device)
-    elif args.model == 'cnn' and args.dataset == 'mnist':
-        net_glob = CNNMnist(args=args).to(args.device)
+    if args.model == 'cnn':
+        if args.dataset in ['cifar', 'cifar100']:  # 支持 cifar 和 cifar100
+            net_glob = CNNCifar(args=args).to(args.device)  # CNNCifar 需要支持 args.num_classes=100
+        elif args.dataset == 'mnist':
+            net_glob = CNNMnist(args=args).to(args.device)
     elif args.model == 'mlp':
         # 计算将图片展平后的输入层维度
         len_in = 1
@@ -70,14 +70,11 @@ def build_model(args, dataset_train):
     elif args.model == 'lenet5' and args.dataset == 'mnist':
         net_glob = LeNet5(args=args).to(args.device)
 
-    elif args.model == 'vgg11' and args.dataset == 'cifar':
+    elif args.model == 'vgg11' and args.dataset in ['cifar', 'cifar100']:
         net_glob = VGG11(args=args).to(args.device)
 
-    elif args.model == 'vgg16' and args.dataset == 'cifar':
-        net_glob = VGG16(args=args).to(args.device)
-
-    elif args.model == 'resnet18' and args.dataset == 'cifar':
-        net_glob = ResNet18(args=args).to(args.device)
+    elif args.model == 'resnet18' and args.dataset in ['cifar', 'cifar100']:
+        net_glob = ResNet18(args=args).to(args.device)  # ResNet18 需要支持 args.num_classes=100
 
     else:
         exit('错误：无法识别的模型')

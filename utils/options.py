@@ -51,6 +51,7 @@ def args_parser():
                        help="parameter for non-iid data distribution (Dirichlet)")
     parser.add_argument('--data_path', type=str, default='../data/',
                        help="path to save dataset")
+
     
     # FedRS parameters
     parser.add_argument('--method', type=str, default='fedavg', 
@@ -75,5 +76,17 @@ def args_parser():
                        help="number of parallel processes for client training")
     
     args = parser.parse_args()
+    # 动态设置num_classes和num_channels
+    if args.dataset == 'mnist':
+        args.num_classes = 10
+        args.num_channels = 1
+    elif args.dataset == 'cifar':
+        args.num_classes = 10
+        args.num_channels = 3
+    elif args.dataset == 'cifar100':
+        args.num_classes = 100  # CIFAR-100有100个类别
+        args.num_channels = 3
+    else:
+        raise ValueError(f'Unsupported dataset: {args.dataset}')
 
     return args

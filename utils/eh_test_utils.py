@@ -24,11 +24,14 @@ class EHTestsetGenerator:
             label_distribution: 标签分布数组，形状为 (num_classes,)
         """
         # 初始化标签分布计数
+        # 自动获取正确类别数
         if hasattr(dataset, 'targets'):
-            num_classes = len(set(dataset.targets))
+            # 转换为numpy数组便于计算
+            targets = dataset.targets.numpy() if isinstance(dataset.targets, torch.Tensor) else dataset.targets
+            num_classes = int(np.max(targets)) + 1  # 最大标签值+1（如MNIST最大是9，9+1=10）
         else:
-            # 对于MNIST数据集
-            num_classes = len(set(dataset.train_labels.numpy()))
+            targets = dataset.train_labels.numpy()
+            num_classes = int(np.max(targets)) + 1
         
         label_distribution = np.zeros(num_classes)
         
@@ -198,7 +201,8 @@ class EHTestsetGenerator:
             # 检查数据维度
             for eh_idx in sorted(eh_label_distributions.keys()):
                 if len(eh_label_distributions[eh_idx]) != num_classes:
-                    print(f"警告：EH {eh_idx} 标签分布维度 {len(eh_label_distributions[eh_idx])} 与类别数 {num_classes} 不匹配")
+                    print(
+                        f"警告：EH {eh_idx} 标签分布维度 {len(eh_label_distributions[eh_idx])} 与类别数 {num_classes} 不匹配")
                     # 修复维度问题，填充为零向量
                     corrected_dist = np.zeros(num_classes)
                     for i in range(min(len(eh_label_distributions[eh_idx]), num_classes)):
@@ -306,7 +310,7 @@ def test_eh_model(net, dataset_test, eh_test_indices, args):
             # 计算准确率
             pred = output.argmax(dim=1, keepdim=True)
             correct += pred.eq(target.view_as(pred)).sum().item()
-    
+
     # 计算平均损失和准确率
     test_loss /= len(eh_testset)
     accuracy = 100. * correct / len(eh_testset)
