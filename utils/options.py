@@ -75,6 +75,14 @@ def args_parser():
     parser.add_argument('--num_processes', type=int, default=8,
                        help="number of parallel processes for client training")
 
+    # Network topology parameters
+    parser.add_argument('--es_ratio', type=float, default=0.3,
+                       help="ratio of edge servers to total nodes (default: 0.3)")
+    parser.add_argument('--graphml_file', type=str, default="graph-example\Oteglobe.graphml",
+                       help="path to the GraphML network topology file")
+    parser.add_argument('--max_capacity', type=int, default=0,
+                       help="maximum capacity of each edge server (0 for automatic calculation based on client/ES ratio)")
+
     # Data saving and loading parameters
     parser.add_argument('--save_data', action='store_true',
                        help="save client data distribution to file")

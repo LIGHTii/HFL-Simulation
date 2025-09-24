@@ -31,28 +31,31 @@ from utils.options import args_parser
 from utils.data_partition import get_client_datasets
 from utils.visualize_client_data import visualize_client_data_distribution
 from utils.eh_test_utils import EHTestsetGenerator, test_eh_model
+from utils.comm_utils import (
+    save_client_data_distribution, generate_data_config_hash, print_available_data_files,
+    calculate_comm_overhead_sfl, calculate_comm_overhead_hfl_bipartite, calculate_comm_overhead_hfl_random
+)
+from utils.bipartite_bandwidth import run_bandwidth_allocation
 from models.Update import LocalUpdate
-from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, VGG16, MobileNetCifar, LeNet5
+from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, MobileNetCifar, LeNet5
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
-from models.cluster import (
+from models.ES_cluster import (
     train_initial_models,
     aggregate_es_models, spectral_clustering_es,
     calculate_es_label_distributions,
     visualize_clustering_comparison
-    #visualize_es_clustering_result,
 )
 import numpy as np
-import random
-
 
 def build_model(args, dataset_train):
     img_size = dataset_train[0][0].shape
 
-    if args.model == 'cnn' and args.dataset == 'cifar':
-        net_glob = CNNCifar(args=args).to(args.device)
-    elif args.model == 'cnn' and args.dataset == 'mnist':
-        net_glob = CNNMnist(args=args).to(args.device)
+    if args.model == 'cnn':
+        if args.dataset in ['cifar', 'cifar100']:  # 支持 cifar 和 cifar100
+            net_glob = CNNCifar(args=args).to(args.device)  # CNNCifar 需要支持 args.num_classes=100
+        elif args.dataset == 'mnist':
+            net_glob = CNNMnist(args=args).to(args.device)
     elif args.model == 'mlp':
         # 计算将图片展平后的输入层维度
         len_in = 1
@@ -70,14 +73,11 @@ def build_model(args, dataset_train):
     elif args.model == 'lenet5' and args.dataset == 'mnist':
         net_glob = LeNet5(args=args).to(args.device)
 
-    elif args.model == 'vgg11' and args.dataset == 'cifar':
+    elif args.model == 'vgg11' and args.dataset in ['cifar', 'cifar100']:
         net_glob = VGG11(args=args).to(args.device)
 
-    elif args.model == 'vgg16' and args.dataset == 'cifar':
-        net_glob = VGG16(args=args).to(args.device)
-
-    elif args.model == 'resnet18' and args.dataset == 'cifar':
-        net_glob = ResNet18(args=args).to(args.device)
+    elif args.model == 'resnet18' and args.dataset in ['cifar', 'cifar100']:
+        net_glob = ResNet18(args=args).to(args.device)  # ResNet18 需要支持 args.num_classes=100
 
     else:
         exit('错误：无法识别的模型')
@@ -88,7 +88,7 @@ def build_model(args, dataset_train):
     return net_glob
 
 
-def get_A(num_users, num_ESs):
+def get_A_random(num_users, num_ESs):
     A = np.zeros((num_users, num_ESs), dtype=int)
 
     # 每个 ES 至少要分到的用户数
@@ -110,6 +110,22 @@ def get_A(num_users, num_ESs):
 
     return A
 
+# def get_A(assignments, num_users, num_ESs, client_id_to_int, es_id_to_int):
+#     A = np.zeros((num_users, num_ESs), dtype=int)
+#     for client_id, es_id in assignments:
+#         if client_id in client_id_to_int and es_id in es_id_to_int:
+#             m = client_id_to_int[client_id]
+#             n = es_id_to_int[es_id]
+#             A[m][n] = 1
+#         else:
+#             print(f"Warning: Client ID '{client_id}' or ES ID '{es_id}' not found in mapping.")
+#     return A
+
+# def get_A_comm(assignments):
+#     A = np.zeros((num_users, num_ESs), dtype=int)
+#     for m, n in assignments:
+#         A[m][n] = 1
+#     return A
 
 def get_B(num_ESs, num_EHs):
     B = np.zeros((num_ESs, num_EHs), dtype=int)
@@ -139,14 +155,14 @@ def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distribu
 
     # 3. 计算ES的标签分布并可视化
     es_label_distributions = calculate_es_label_distributions(A, client_label_distributions)
-    #visualize_es_clustering_result(es_label_distributions, cluster_labels)
+
+    #labels1, labels2, labels3 = run_all_clusterings(es_models, epsilon=args.epsilon)
     # 在完成谱聚类后添加对比可视化
     visualize_clustering_comparison(
         es_label_distributions=es_label_distributions,
         cluster_labels=cluster_labels,
         save_path='./save/clustering_comparison.png'
     )
-
     return B
 
 # ===== 根据 A、B 构造 C1 和 C2 =====
@@ -208,6 +224,18 @@ def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl_random, 
             copy.deepcopy(w_hfl_cluster), loss_hfl_cluster, 
             copy.deepcopy(w_sfl), loss_sfl)
 
+def summarize_results(net_glob_hfl_bipartite, net_glob_hfl_random, net_glob_sfl, dataset_train, dataset_test, args,
+                     total_comm_overhead_bipartite_upload, total_comm_overhead_bipartite_download,
+                     total_comm_overhead_random_upload, total_comm_overhead_random_download,
+                     total_comm_overhead_sfl_upload, total_comm_overhead_sfl_download):
+    print("=== Final Communication Overhead Summary ===")
+    print(f"SFL Total Overhead: {total_comm_overhead_sfl_upload + total_comm_overhead_sfl_download:.6f}s "
+          f"(Upload: {total_comm_overhead_sfl_upload:.6f}s, Download: {total_comm_overhead_sfl_download:.6f}s)")
+    print(f"HFL Bipartite Total Overhead: {total_comm_overhead_bipartite_upload + total_comm_overhead_bipartite_download:.6f}s "
+          f"(Upload: {total_comm_overhead_bipartite_upload:.6f}s, Download: {total_comm_overhead_bipartite_download:.6f}s)")
+    print(f"HFL Random Total Overhead: {total_comm_overhead_random_upload + total_comm_overhead_random_download:.6f}s "
+          f"(Upload: {total_comm_overhead_random_upload:.6f}s, Download: {total_comm_overhead_random_download:.6f}s)")
+
 def save_results_to_csv(results, filename):
     """Save results to CSV file for three models, including EH-level testing results"""
     with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
@@ -252,17 +280,45 @@ if __name__ == '__main__':
 
     net_glob = build_model(args, dataset_train)
 
+    bipartite_graph, client_nodes, es_nodes, distance_matrix, r, r_random, assignments, loads, B_n, r_es, pos, active_es_nodes, r_initial, association_matrix, active_es_distance_matrix, cloud_pos, r_es_to_cloud = run_bandwidth_allocation(
+        graphml_file=args.graphml_file, 
+        es_ratio=args.es_ratio, 
+        max_capacity=args.max_capacity, 
+        visualize=True)
+    if bipartite_graph is None:
+        print("Failed to build bipartite graph, exiting.")
+        return
+
+    # # 创建节点ID映射字典：字符串ID -> 整数ID
+    # client_id_to_int = {client_id: i for i, client_id in enumerate(client_nodes)}
+    # int_to_client_id = {i: client_id for i, client_id in enumerate(client_nodes)}
+    # es_id_to_int = {es_id: i for i, es_id in enumerate(es_nodes)}
+    # int_to_es_id = {i: es_id for i, es_id in enumerate(es_nodes)}
+    
+    # 打印映射信息
+    print(f"\n=== 节点ID映射信息 ===")
+    print(f"客户端节点总数: {len(client_nodes)}")
+    print(f"边缘服务器节点总数: {len(es_nodes)}")
+    print(f"客户端ID映射示例 (前5个):")
+    for i in range(min(5, len(client_nodes))):
+        print(f"  '{client_nodes[i]}' -> {i}")
+    print(f"边缘服务器ID映射示例 (前5个):")
+    for i in range(min(5, len(es_nodes))):
+        print(f"  '{es_nodes[i]}' -> {i}")
+    print("=" * 25)
+
     net_glob.train()
 
     # 初始化全局权重
     w_glob = net_glob.state_dict()
-    num_users = args.num_users
-    num_ESs = num_users // 3
+    num_users = len(client_nodes)
+    num_ESs = len(es_nodes)
     k2 = args.ES_k2
     k3 = args.EH_k3
     num_processes = args.num_processes
 
-    A = get_A(num_users, num_ESs)
+    # A = get_A(assignments, num_users, num_ESs, client_id_to_int, es_id_to_int)
+    A = association_matrix  # 使用关联矩阵作为A矩阵
 
     # 使用谱聚类生成B矩阵（替换原来的随机B矩阵）
     print("开始初始训练和谱聚类...")
@@ -282,6 +338,7 @@ if __name__ == '__main__':
     B_random = get_B(num_ESs, num_EHs)
 
     # 构建两套层级结构
+
     C1_random, C2_random = build_hierarchy(A, B_random)
     C1_cluster, C2_cluster = build_hierarchy(A, B_cluster)
     
@@ -327,7 +384,7 @@ if __name__ == '__main__':
 
     # 生成唯一的时间戳用于文件名，包含重要参数
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    param_str = f"e{args.epochs}_u{args.num_users}_le{args.local_ep}_{args.dataset}_{args.model}_k2{args.ES_k2}_k3{args.EH_k3}_p{args.num_processes}_lr{args.lr}_lri{args.lr_init}"
+    param_str = f"e{args.epochs}_u{args.num_users}_le{args.local_ep}_{args.dataset}_{args.model}_k2{args.ES_k2}_k3{args.EH_k3}_p{args.num_processes}"
     if not args.iid:
         param_str += f"_beta{args.beta}"
     csv_filename = f'./results/training_results_{param_str}_{timestamp}.csv'
@@ -777,7 +834,6 @@ if __name__ == '__main__':
     print("2. HFL (Clustered B Matrix) - 使用谱聚类生成的ES-EH关联矩阵") 
     print("3. SFL (Single Layer) - 传统单层联邦学习")
     print(f"训练参数: epochs={args.epochs}, clients={args.num_users}, local_epochs={args.local_ep}")
-    print(f"学习率设置: 联邦学习lr={args.lr}, 谱聚类初始训练lr_init={args.lr_init}")
     print(f"层级参数: k2={args.ES_k2} (ES层聚合轮数), k3={args.EH_k3} (EH层聚合轮数)")
     print(f"并行参数: num_processes={args.num_processes}")
     print(f"数据集: {args.dataset}, 模型: {args.model}, IID: {args.iid}")
