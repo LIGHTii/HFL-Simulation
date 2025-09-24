@@ -38,7 +38,7 @@ def build_bipartite_graph(M, N, max_client_es_distance=1000, sigma=1.0):
     
     return r_initial, distances
 
-def allocate_bandwidth_eba(r_initial, max_capacity=None):
+def establish_communication_channels(r_initial, max_capacity=None):
     """
     Allocate bandwidth using bipartite optimization with load balancing.
     
@@ -126,7 +126,7 @@ def run_bandwidth_allocation(M, N, max_client_es_distance=1000, sigma=1.0):
             - loads: Number of clients per ES
     """
     r_initial, distances = build_bipartite_graph(M, N, max_client_es_distance, sigma)
-    r, assignments, loads = allocate_bandwidth_eba(r_initial, max_capacity=M // N + 1)
+    r, assignments, loads = establish_communication_channels(r_initial, max_capacity=M // N + 1)
     
     C1 = {n: [] for n in range(N)}
     for m, n in assignments:

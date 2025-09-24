@@ -35,7 +35,7 @@ from utils.comm_utils import (
     save_client_data_distribution, generate_data_config_hash, print_available_data_files,
     calculate_comm_overhead_sfl, calculate_comm_overhead_hfl_bipartite, calculate_comm_overhead_hfl_random
 )
-from utils.bipartite_bandwidth import run_bandwidth_allocation
+from utils.bipartite_bandwidth import run_bandwidth_allocation, calculate_distance
 from models.Update import LocalUpdate
 from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, MobileNetCifar, LeNet5
 from models.Fed import FedAvg, FedAvg_layered
@@ -280,7 +280,8 @@ if __name__ == '__main__':
 
     net_glob = build_model(args, dataset_train)
 
-    bipartite_graph, client_nodes, es_nodes, distance_matrix, r, r_random, assignments, loads, B_n, r_es, pos, active_es_nodes, r_initial, association_matrix, active_es_distance_matrix, cloud_pos, r_es_to_cloud = run_bandwidth_allocation(
+    # 运行带宽分配算法获取节点分布和通信速率
+    bipartite_graph, client_nodes, active_es_nodes, A_design, r_client_to_es, r_es, r_es_to_cloud, r_client_to_cloud = run_bandwidth_allocation(
         graphml_file=args.graphml_file, 
         es_ratio=args.es_ratio, 
         max_capacity=args.max_capacity, 

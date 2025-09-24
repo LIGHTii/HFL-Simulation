@@ -149,7 +149,7 @@ def select_edge_servers_uniformly(node_ids, pos, es_ratio):
     return es_nodes, client_nodes
 
 
-def visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, save_path=None, cloud_pos=None):
+def visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, save_path=None, cloud_pos=None, association_matrix=None):
     """
     生成节点地理分布可视化图
     
@@ -160,31 +160,47 @@ def visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, save_path
         es_ratio: 边缘服务器占比
         save_path: 保存路径（可选）
         cloud_pos: 云服务器位置 (lon, lat)，如果提供则显示
+        association_matrix: 客户端到边缘服务器的关联矩阵，如果提供则绘制关联边
     
     Returns:
         str: 保存的文件名
     """
     plt.figure(figsize=(12, 8))
     
+    # 如果提供了关联矩阵，先绘制连接边
+    if association_matrix is not None and len(client_nodes) > 0 and len(es_nodes) > 0:
+        print("绘制客户端与边缘服务器之间的关联边...")
+        # 绘制客户端和边缘服务器之间的关联边
+        for i, client in enumerate(client_nodes):
+            if client in pos:
+                client_pos = pos[client]
+                # 找出此客户端关联的边缘服务器
+                for j, es in enumerate(es_nodes):
+                    if es in pos and association_matrix[i, j] == 1:
+                        es_pos = pos[es]
+                        # 绘制边，使用灰色，z-order设为较低值，确保点在边上面
+                        plt.plot([client_pos[0], es_pos[0]], [client_pos[1], es_pos[1]], 
+                                color='#909291', linewidth=0.8, alpha=0.6, zorder=1)
+    
     # 绘制客户端节点
     client_positions = np.array([pos[node] for node in client_nodes if node in pos])
     if len(client_positions) > 0:
         plt.scatter(client_positions[:, 0], client_positions[:, 1], 
-                   c='#719aac', marker='o', s=100, alpha=0.7, label=f'Clients ({len(client_nodes)})')
+                   c='#719aac', marker='o', s=100, alpha=0.7, label=f'Clients ({len(client_nodes)})', zorder=2)
     
     # 绘制边缘服务器节点
     es_positions = np.array([pos[node] for node in es_nodes if node in pos])
     if len(es_positions) > 0:
         plt.scatter(es_positions[:, 0], es_positions[:, 1], 
                    c='#e29135', marker='^', s=100, 
-                   label=f'Edge Servers ({len(es_nodes)})')
+                   label=f'Edge Servers ({len(es_nodes)})', zorder=3)
     
     # 添加边缘服务器编号标注
     for i, node in enumerate(es_nodes):
         if node in pos:
             lon, lat = pos[node]
             plt.annotate(f'ES{i}', (lon, lat), xytext=(5, 5), 
-                       textcoords='offset points', fontsize=8, fontweight='bold')
+                       textcoords='offset points', fontsize=8, fontweight='bold', zorder=4)
                        
     # 如果提供了云服务器位置，则绘制云服务器
     if cloud_pos is not None:
@@ -197,16 +213,33 @@ def visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, save_path
     plt.xlabel('Longitude')
     plt.ylabel('Latitude')
     total_nodes = len(client_nodes) + len(es_nodes)
-    plt.title(f'Geographic Distribution of Nodes\n(ES Ratio: {es_ratio:.2f}, Total: {total_nodes} nodes)')
+    
+    # 根据是否包含关联边和云服务器修改标题
+    title = f'Geographic Distribution of Nodes\n(ES Ratio: {es_ratio:.2f}, Total: {total_nodes} nodes)'
+    if association_matrix is not None:
+        title += ' with Associations'
+    if cloud_pos is not None:
+        title += ' and Cloud Server'
+    plt.title(title)
+    
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     
-    # 保存可视化图
+    # 保存可视化图，文件名根据内容区分
     if save_path:
         viz_filename = save_path
     else:
-        viz_filename = f"./save/node_distribution_es{len(es_nodes)}_ratio{es_ratio:.2f}.png"
+        viz_filename = f"./save/node_distribution_es{len(es_nodes)}_ratio{es_ratio:.2f}"
+        if association_matrix is not None:
+            viz_filename += "_with_associations"
+        if cloud_pos is not None:
+            viz_filename += "_with_cloud"
+        viz_filename += ".png"
+    
+    # 确保保存目录存在
+    import os
+    os.makedirs(os.path.dirname(viz_filename), exist_ok=True)
     
     plt.savefig(viz_filename, dpi=300, bbox_inches='tight')
     plt.close()
@@ -346,6 +379,7 @@ def build_bipartite_graph(graphml_file="./graph-example/Ulaknet.graphml", es_rat
 
     # 生成地理分布可视化（如果需要）
     if visualize:
+        # 在初始阶段，还没有关联矩阵，所以这里不传递association_matrix
         visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio)
 
     return bipartite_graph, client_nodes, es_nodes, distance_matrix, pos
@@ -419,18 +453,35 @@ def plot_assigned_graph(bipartite_graph, client_nodes, es_nodes, assignments, cl
     plt.savefig("assigned_bipartite_graph_with_ch.png")
     plt.close()
 
-def allocate_bandwidth_eba(client_nodes, es_nodes, distance_matrix, pos, model_size=1e7, max_capacity=None):
+def establish_communication_channels(client_nodes, es_nodes, distance_matrix, pos, max_capacity=None):
     """
-    基于边缘计算的带宽分配算法 (Edge-Based Allocation)
+    为层次联邦学习系统计算通信速率并得到client-es关联策略。
+    功能概述:
+    1. 计算客户端到边缘服务器(client-es)的传输速率
+    2. 根据最大传输速率确定客户端到边缘服务器的关联
+    3. 筛选活跃的边缘服务器集合
+    4. 计算活跃边缘服务器之间(es-es)的距离矩阵和传输速率
+    5. 确定云服务器位置(位于活跃边缘服务器的质心)
+    6. 计算边缘服务器到云服务器(es-cloud)的传输速率
+    7. 计算客户端到云服务器(client-cloud)的直接传输速率
     
-    主要流程:
-    1. 计算信道增益和传输速率
-    2. 使用匈牙利算法进行初始分配
-    3. 处理容量约束违反
-    4. 模拟退火优化分配方案
-    5. 计算边缘服务器间传输速率
-    6. 分配云端带宽
+    Args:
+        client_nodes: 客户端节点列表
+        es_nodes: 边缘服务器节点列表
+        distance_matrix: 客户端到边缘服务器的距离矩阵
+        pos: 节点位置字典 {node_id: (lon, lat)}
+        max_capacity: 每个边缘服务器最大容量(客户端数)
+    
+    Returns:
+        client_nodes: 客户端节点列表
+        active_es_nodes: 活跃边缘服务器节点列表
+        association_matrix: 客户端到边缘服务器的关联矩阵
+        r_client_to_es: 客户端到边缘服务器的传输速率矩阵
+        r_es: 边缘服务器间的传输速率矩阵
+        r_es_to_cloud: 边缘服务器到云服务器的传输速率矩阵
+        r_client_to_cloud: 客户端到云服务器的直接传输速率矩阵
     """
+
     # 如果max_capacity为None或0，先尝试从args中读取，如果args.max_capacity也为0，再自动计算
     if max_capacity is None or max_capacity == 0:
         args = args_parser()
@@ -440,27 +491,28 @@ def allocate_bandwidth_eba(client_nodes, es_nodes, distance_matrix, pos, model_s
         else:
             max_capacity = max(1, int(len(client_nodes) / len(es_nodes)) + 1)
             print(f"Automatically calculated max_capacity: {max_capacity} based on {len(client_nodes)} clients and {len(es_nodes)} edge servers")
-    # 1. 初始化参数
-    M = len(client_nodes)  # 客户端数量
-    N = len(es_nodes)      # 边缘服务器数量
-    B_cloud = 5e7          # 总云端带宽
-    p_m = np.ones(M) * 1.0  # 设备发射功率
-    N0 = 10**(-20.4)        # 噪声功率谱密度
-    path_loss_exponent = 3.5 # 路径损耗指数 (alpha)
-    # 在参考距离d0=1米处的信道增益
-    g0_at_1m = 1e-4
+            
+    # 1. 初始化系统参数
+    M = len(client_nodes)      # 客户端数量
+    N = len(es_nodes)          # 边缘服务器数量
+    B_cloud = 5e7              # 总云端带宽 (50 MHz)
+    p_m = np.ones(M) * 1.0     # 客户端发射功率 (W)
+    N0 = 10**(-20.4)           # 噪声功率谱密度 (W/Hz)
+    path_loss_exponent = 3.5   # 路径损耗指数 (alpha)
+    g0_at_1m = 1e-4            # 在参考距离d0=1米处的信道增益
 
-    #=======================client-es========================#
-
-    # 2-4. 计算客户端到边缘服务器的传输速率
-    client_center_bandwidth = 2e7  # 20 MHz
-    client_bandwidth_sigma = 0.5
-    client_bandwidth_range = (1e6, 5e7)
+    #=======================STEP 1: 计算client-es传输速率========================#
+    print("\n========== 计算客户端到边缘服务器(client-es)传输速率 ==========")
+    
+    # 设置客户端到边缘服务器的通信参数
+    client_center_bandwidth = 2e7        # 中心带宽 20 MHz
+    client_bandwidth_sigma = 0.5         # 带宽对数正态分布的标准差
+    client_bandwidth_range = (1e6, 5e7)  # 带宽范围 1-50 MHz
     
     # 使用通用函数计算传输速率
-    r_initial, g, B_mn = calculate_transmission_rates(
+    r_client_to_es, g, B_mn = calculate_transmission_rates(
         distance_matrix=distance_matrix,
-        transmit_power=p_m,
+        transmit_power=p_m,              # 客户端发射功率
         center_bandwidth=client_center_bandwidth,
         bandwidth_sigma=client_bandwidth_sigma,
         noise_density=N0,
@@ -468,30 +520,43 @@ def allocate_bandwidth_eba(client_nodes, es_nodes, distance_matrix, pos, model_s
         g0_at_1m=g0_at_1m,
         bandwidth_range=client_bandwidth_range
     )
-    
-    print(f"Channel gain (g, first 5x5):\n{g[:min(5, M), :min(5, N)]}\n")
-    print(f"Device-to-Edge Bandwidth (B_mn, first 5x5):\n{B_mn[:min(5, M), :min(5, N)]}\n")
-    print(f"Initial transmission rates (r_initial, first 5x5):\n{r_initial[:min(5, M), :min(5, N)]}")
 
-    # 5. 基于最大传输速率为每个客户端选择边缘服务器
-    assignments_client_to_es, association_matrix = create_association_based_on_rate(r_initial)
-    print(f"Created association matrix based on maximum transmission rate")
-    print(f"Total associations: {len(assignments_client_to_es)}")
-    print(f"Association matrix shape: {association_matrix.shape}")
-    print(f"Association matrix (first 5x5):\n{association_matrix[:min(5, M), :min(5, N)]}")
-
-    #=======================es-es========================#
     
-    # 6. 根据关联矩阵确定活跃边缘服务器节点
-    # 找出与至少一个客户端关联的边缘服务器
+    # 打印计算结果示例
+    print(f"信道增益矩阵 (g, 前5x5):\n{g[:min(5, M), :min(5, N)]}\n")
+    print(f"带宽分配矩阵 (B_mn, 前5x5):\n{B_mn[:min(5, M), :min(5, N)]}\n")
+    print(f"初始传输速率矩阵 (r_client_to_es, 前5x5) [bit/s]:\n{r_client_to_es[:min(5, M), :min(5, N)]}")
+    
+    #=======================STEP 2: 根据传输速率创建关联矩阵========================#
+    print("\n========== 基于最大传输速率为客户端分配边缘服务器 ==========")
+
+    # 基于最大传输速率为每个客户端选择边缘服务器
+    assignments, association_matrix = create_association_based_on_rate(r_client_to_es)
+    print(f"创建了基于最大传输速率的关联矩阵")
+    print(f"总关联数: {len(assignments)}/{M} ({len(assignments)/M:.2%})")
+    print(f"关联矩阵形状: {association_matrix.shape}")
+    print(f"关联矩阵示例 (前5x5):\n{association_matrix[:min(5, M), :min(5, N)]}")
+
+    #=======================STEP 3: 确定活跃边缘服务器集合========================#
+    print("\n========== 根据关联矩阵确定活跃边缘服务器集合 ==========")
+
+    # 找出与至少一个客户端关联的边缘服务器(活跃边缘服务器)
     active_es_indices = np.where(np.sum(association_matrix, axis=0) > 0)[0]
     active_es_nodes = [es_nodes[i] for i in active_es_indices]
     N_active = len(active_es_nodes)
-    print(f"Active edge servers: {len(active_es_nodes)}/{N} ({len(active_es_nodes)/N:.2%})")
-    print(f"Active edge server indices: {active_es_indices}")
+
+    print(f"活跃边缘服务器数量: {N_active}/{N} ({N_active/N:.2%})")
+    print(f"活跃边缘服务器索引: {active_es_indices}")
+
+    if N_active == 0:
+        # 报错并终止程序
+        raise RuntimeError("错误: 没有活跃的边缘服务器，无法继续执行程序。请检查网络拓扑和分配算法。")
+
+    #=======================STEP 4: 计算活跃es-es距离矩阵========================#
+    print("\n========== 计算活跃边缘服务器之间的距离矩阵 ==========")
     
-    # 7. 生成活跃边缘服务器之间的距离矩阵
-    active_es_distance_matrix = np.zeros((len(active_es_nodes), len(active_es_nodes)))
+    # 生成活跃边缘服务器之间的距离矩阵
+    active_es_distance_matrix = np.zeros((N_active, N_active))
     for i, idx1 in enumerate(active_es_indices):
         e1 = es_nodes[idx1]
         for j, idx2 in enumerate(active_es_indices):
@@ -499,68 +564,24 @@ def allocate_bandwidth_eba(client_nodes, es_nodes, distance_matrix, pos, model_s
             if e1 in pos and e2 in pos:
                 e1_pos = pos[e1]
                 e2_pos = pos[e2]
+                # 计算地理距离(千米)并转换为米
                 active_es_distance_matrix[i, j] = calculate_distance(e1_pos[1], e1_pos[0], e2_pos[1], e2_pos[0]) * 1000
             else:
-                print(f"Warning: No position for active edge {e1} or {e2}, setting distance to infinity")
+                print(f"警告: 活跃边缘服务器 {e1} 或 {e2} 缺少位置信息，设置距离为无穷大")
                 active_es_distance_matrix[i, j] = float('inf')
     
-    #=======================确定cloud========================#
-
-    # 8. 计算活跃边缘服务器的地理质心作为云服务器的位置
+    print(f"生成活跃ES距离矩阵，形状: {active_es_distance_matrix.shape}")
     if N_active > 0:
-        # 收集活跃边缘服务器的经纬度坐标
-        active_es_coords = []
-        for idx in active_es_indices:
-            es_node = es_nodes[idx]
-            if es_node in pos:
-                # pos中坐标是(lon, lat)格式
-                active_es_coords.append(pos[es_node])
-        
-        # 计算质心
-        if active_es_coords:
-            cloud_lon = sum(coord[0] for coord in active_es_coords) / len(active_es_coords)
-            cloud_lat = sum(coord[1] for coord in active_es_coords) / len(active_es_coords)
-            cloud_pos = (cloud_lon, cloud_lat)
-            
-            print(f"Cloud server positioned at the centroid of active ESs: lon={cloud_lon:.6f}, lat={cloud_lat:.6f}")
-            
-            # 9. 计算每个边缘服务器到云的距离
-            es_to_cloud_distance = np.zeros(N)
-            print("\n边缘服务器到云服务器的距离:")
-            for idx in range(N):
-                es_node = es_nodes[idx]
-                if es_node in pos:
-                    es_pos = pos[es_node]
-                    # 计算地理距离(千米)并转换为米
-                    distance_km = calculate_distance(es_pos[1], es_pos[0], cloud_lat, cloud_lon)
-                    es_to_cloud_distance[idx] = distance_km * 1000
-                    # 只打印活跃的边缘服务器
-                    if idx in active_es_indices:
-                        print(f"  ES{idx} → Cloud: {distance_km:.3f} km ({distance_km*1000:.1f} m)")
-                else:
-                    print(f"Warning: No position for edge server {es_node}, setting distance to infinity")
-                    es_to_cloud_distance[idx] = float('inf')
-        else:
-            print("Warning: No position information for active edge servers, cannot calculate cloud position")
-            cloud_pos = None
-            es_to_cloud_distance = None
-    else:
-        print("Warning: No active edge servers found, cannot calculate cloud position")
-        cloud_pos = None
-        es_to_cloud_distance = None
-
-    print(f"Generated active ES distance matrix with shape: {active_es_distance_matrix.shape}")
-    if len(active_es_nodes) > 0:
-        print(f"Active ES distance matrix (first 5x5):\n{active_es_distance_matrix[:min(5, len(active_es_nodes)), :min(5, len(active_es_nodes))]}")
-
-
-    # 10. 计算边缘服务器间的传输速率
-
+        print(f"活跃ES距离矩阵示例 (前5x5) [米]:\n{active_es_distance_matrix[:min(5, N_active), :min(5, N_active)]}")
+    
+    #=======================STEP 5: 计算活跃es-es传输速率========================#
+    print("\n========== 计算活跃边缘服务器之间的传输速率 ==========")
+    
     # 定义ES-to-ES通信的专属参数
-    p_es = np.ones(N) * 5.0  # ES通常有更高的发射功率
-    es_center_bandwidth = 1e8  # 100 MHz - ES间通常有更高带宽
-    es_bandwidth_sigma = 0.3
-    es_bandwidth_range = (2e7, 2e8)  # 20MHz - 200MHz
+    p_es = np.ones(N) * 5.0            # ES通常有更高的发射功率 (5W)
+    es_center_bandwidth = 1e8          # ES间通常有更高带宽 (100 MHz)
+    es_bandwidth_sigma = 0.3           # 带宽对数正态分布的标准差
+    es_bandwidth_range = (2e7, 2e8)    # 带宽范围 20-200 MHz
     
     # 使用通用函数计算活跃ES之间的传输速率
     r_es_active, g_es, B_es = calculate_transmission_rates(
@@ -578,24 +599,86 @@ def allocate_bandwidth_eba(client_nodes, es_nodes, distance_matrix, pos, model_s
     
     # 创建完整的r_es矩阵，默认为0
     r_es = np.zeros((N, N))
+    
     # 将活跃ES之间的传输速率填入完整矩阵
     for i, idx_i in enumerate(active_es_indices):
         for j, idx_j in enumerate(active_es_indices):
             if idx_i != idx_j:
                 r_es[idx_i, idx_j] = r_es_active[i, j]
 
-    # --- 打印结果用于验证 ---
-    print(f"Active ES-to-ES Channel Gain (g_es, first 5x5):\n{g_es[:min(5, N_active), :min(5, N_active)]}\n")
-    print(f"Active ES-to-ES Bandwidth (B_es, first 5x5):\n{B_es[:min(5, N_active), :min(5, N_active)]}\n")
-    print(f"Active ES-to-ES Transmission Rates (r_es_active, first 5x5):\n{r_es_active[:min(5, N_active), :min(5, N_active)]}")
-    print(f"Full ES-to-ES Transmission Rates (r_es, first 5x5):\n{r_es[:min(5, N), :min(5, N)]}")
+    # 打印结果示例
+    print(f"活跃ES间信道增益示例 (前5x5):\n{g_es[:min(5, N_active), :min(5, N_active)]}\n")
+    print(f"活跃ES间带宽分配示例 (前5x5) [Hz]:\n{B_es[:min(5, N_active), :min(5, N_active)]}\n")
+    print(f"活跃ES间传输速率示例 (前5x5) [bit/s]:\n{r_es_active[:min(5, N_active), :min(5, N_active)]}")
     
-    # 11. 计算ES到云的传输速率
-    if 'es_to_cloud_distance' in locals() and es_to_cloud_distance is not None:
+    # 打印平均传输速率
+    if N_active > 1:
+        avg_rate = np.sum(r_es_active) / (N_active * (N_active - 1))  # 排除对角线元素
+        print(f"活跃ES之间的平均传输速率: {avg_rate/1e6:.2f} Mbps")
+    
+    # 对于演示，显示完整ES矩阵的示例
+    print(f"完整ES传输速率矩阵示例 (前5x5) [bit/s]:\n{r_es[:min(5, N), :min(5, N)]}")
+    
+    #=======================STEP 6: 确定云服务器位置========================#
+    print("\n========== 确定云服务器位置(活跃ES质心) ==========")
+
+    # 计算活跃边缘服务器的地理质心作为云服务器的位置
+    cloud_pos = None
+    es_to_cloud_distance = None
+    
+    if N_active > 0:
+        # 收集活跃边缘服务器的经纬度坐标
+        active_es_coords = []
+        for idx in active_es_indices:
+            es_node = es_nodes[idx]
+            if es_node in pos:
+                # pos中坐标是(lon, lat)格式
+                active_es_coords.append(pos[es_node])
+
+        # 计算质心
+        if active_es_coords:
+            cloud_lon = sum(coord[0] for coord in active_es_coords) / len(active_es_coords)
+            cloud_lat = sum(coord[1] for coord in active_es_coords) / len(active_es_coords)
+            cloud_pos = (cloud_lon, cloud_lat)
+            
+            print(f"云服务器位于活跃ES质心: 经度={cloud_lon:.6f}, 纬度={cloud_lat:.6f}")
+            
+            #=======================STEP 7: 计算ES到云的距离========================#
+            print("\n========== 计算边缘服务器到云服务器的距离 ==========")
+            
+            # 计算每个边缘服务器到云的距离
+            es_to_cloud_distance = np.zeros(N)
+            print("\n边缘服务器到云服务器的距离:")
+            
+            for idx in range(N):
+                es_node = es_nodes[idx]
+                if es_node in pos:
+                    es_pos = pos[es_node]
+                    # 计算地理距离(千米)并转换为米
+                    distance_km = calculate_distance(es_pos[1], es_pos[0], cloud_lat, cloud_lon)
+                    es_to_cloud_distance[idx] = distance_km * 1000
+                    
+                    # 只打印活跃的边缘服务器
+                    if idx in active_es_indices:
+                        print(f"  ES{idx} → Cloud: {distance_km:.3f} km ({distance_km*1000:.1f} m)")
+                else:
+                    print(f"警告: 边缘服务器 {es_node} 缺少位置信息，设置距离为无穷大")
+                    es_to_cloud_distance[idx] = float('inf')
+        else:
+            print("警告: 活跃边缘服务器缺少位置信息，无法计算云服务器位置")
+    else:
+        print("警告: 没有活跃边缘服务器，无法计算云服务器位置")
+
+    #=======================STEP 8: 计算ES到云的传输速率========================#
+    print("\n========== 计算边缘服务器到云服务器(ES-Cloud)的传输速率 ==========")
+    
+    # 计算ES到云的传输速率
+    r_es_to_cloud = None
+    if es_to_cloud_distance is not None:
         # 定义ES-to-Cloud通信的专属参数
-        cloud_center_bandwidth = 1.2e8  # 120 MHz - 云连接通常带宽更高
-        cloud_bandwidth_sigma = 0.25
-        cloud_bandwidth_range = (5e7, 3e8)  # 50MHz - 300MHz
+        cloud_center_bandwidth = 1.2e8        # 云连接通常带宽更高 (120 MHz)
+        cloud_bandwidth_sigma = 0.25          # 带宽对数正态分布的标准差
+        cloud_bandwidth_range = (5e7, 3e8)    # 带宽范围 50-300 MHz
         
         # 创建距离矩阵（每个ES到云的距离）
         es_cloud_distance_matrix = es_to_cloud_distance.reshape(-1, 1)  # 转为列向量
@@ -603,7 +686,7 @@ def allocate_bandwidth_eba(client_nodes, es_nodes, distance_matrix, pos, model_s
         # 使用通用函数计算ES到云的传输速率
         r_es_to_cloud, g_es_to_cloud, B_es_to_cloud = calculate_transmission_rates(
             distance_matrix=es_cloud_distance_matrix,
-            transmit_power=p_es,  # 使用与ES-ES相同的发射功率
+            transmit_power=p_es,              # 使用与ES-ES相同的发射功率
             center_bandwidth=cloud_center_bandwidth,
             bandwidth_sigma=cloud_bandwidth_sigma,
             noise_density=N0,
@@ -612,43 +695,84 @@ def allocate_bandwidth_eba(client_nodes, es_nodes, distance_matrix, pos, model_s
             bandwidth_range=cloud_bandwidth_range
         )
         
+        # 打印ES到云传输速率
         print("\n边缘服务器到云服务器的传输速率:")
         for idx in active_es_indices[:min(10, len(active_es_indices))]:
             rate_mbps = r_es_to_cloud[idx, 0] / 1e6  # 转换为Mbps
             print(f"  ES{idx} → Cloud: {rate_mbps:.2f} Mbps")
+
         if len(active_es_indices) > 10:
             print(f"  ... 以及其他 {len(active_es_indices) - 10} 个边缘服务器")
+
+        # 计算平均ES-Cloud传输速率
+        active_es_to_cloud_rates = r_es_to_cloud[active_es_indices, 0]
+        print(f"活跃ES到云的平均传输速率: {np.mean(active_es_to_cloud_rates)/1e6:.2f} Mbps")
     else:
-        print("Warning: Cannot calculate ES-to-Cloud transmission rates due to missing distance information")
+        print("警告: 由于缺少距离信息，无法计算ES到云的传输速率")
         r_es_to_cloud = None
-        g_es_to_cloud = None
-        B_es_to_cloud = None
-    
-    # 12. 分配云端带宽给活跃边缘服务器
-    B_n = np.zeros(N)
-    min_bandwidth = 1e6
-    
-    # 根据负载权重分配云端带宽
-    if N_active > 0:
-        mean_B = 5e7
-        std_B = 1e7
-        base_bandwidths = np.random.normal(loc=mean_B, scale=std_B, size=N_active)
-        base_bandwidths = np.clip(base_bandwidths, mean_B / 2, mean_B * 2)
-        load_weights = loads[active_indices] / np.sum(loads[active_indices])
-        B_n[active_indices] = base_bandwidths * load_weights * (B_cloud / np.sum(base_bandwidths * load_weights))
-    B_n[B_n == 0] = min_bandwidth
-    print(f"Active edge servers (indices): {active_indices}")
-    print(f"Active edge servers (nodes): {active_es_nodes}")
-    print(f"Edge-to-Cloud Bandwidth (B_n): {B_n}")
 
-    # 12. 输出统计信息
-    r_values = r[r > 0]
-    r_random_values = r_random[r_random > 0]
-    print(f"Bipartite r stats: mean={np.mean(r_values):.2e}, max={np.max(r_values):.2e}, min={np.min(r_values):.2e}")
-    print(f"Random r stats: mean={np.mean(r_random_values):.2e}, max={np.max(r_random_values):.2e}, min={np.min(r_random_values):.2e}")
-    print("Optimization Version: Hungarian + Simulated Annealing (Maximize Min Rate)")
-
-    return r, r_random, assignments, loads, B_n, r_es, pos, active_es_nodes, r_initial, association_matrix, active_es_distance_matrix, cloud_pos, r_es_to_cloud
+    #=======================STEP 9: 计算客户端到云的直接传输速率========================#
+    print("\n========== 计算客户端到云服务器(Client-Cloud)的直接传输速率 ==========")
+    
+    # 计算客户端到云的传输速率
+    r_client_to_cloud = None
+    if cloud_pos is not None:
+        # 定义客户端到云通信的专属参数
+        cloud_direct_bandwidth = 8e7          # 直连云带宽较低 (80 MHz)
+        cloud_direct_sigma = 0.3              # 带宽对数正态分布的标准差
+        cloud_direct_range = (1e7, 2e8)       # 带宽范围 10-200 MHz
+        
+        # 计算每个客户端到云的距离
+        client_to_cloud_distance = np.zeros((M, 1))
+        for idx in range(M):
+            client_node = client_nodes[idx]
+            if client_node in pos:
+                client_pos = pos[client_node]
+                # 计算地理距离(千米)并转换为米
+                distance_km = calculate_distance(client_pos[1], client_pos[0], cloud_pos[1], cloud_pos[0])
+                client_to_cloud_distance[idx, 0] = distance_km * 1000
+            else:
+                print(f"警告: 客户端 {client_node} 缺少位置信息，设置距离为无穷大")
+                client_to_cloud_distance[idx, 0] = float('inf')
+        
+        # 使用通用函数计算客户端到云的传输速率
+        r_client_to_cloud, g_client_to_cloud, B_client_to_cloud = calculate_transmission_rates(
+            distance_matrix=client_to_cloud_distance,
+            transmit_power=p_m,               # 使用客户端发射功率
+            center_bandwidth=cloud_direct_bandwidth,
+            bandwidth_sigma=cloud_direct_sigma,
+            noise_density=N0,
+            path_loss_exponent=path_loss_exponent,
+            g0_at_1m=g0_at_1m,
+            bandwidth_range=cloud_direct_range
+        )
+        
+        # 打印客户端到云传输速率统计信息
+        print(f"\n客户端到云服务器的直接传输速率统计:")
+        avg_rate = np.mean(r_client_to_cloud)
+        min_rate = np.min(r_client_to_cloud)
+        max_rate = np.max(r_client_to_cloud)
+        print(f"  平均传输速率: {avg_rate/1e6:.2f} Mbps")
+        print(f"  最小传输速率: {min_rate/1e6:.2f} Mbps")
+        print(f"  最大传输速率: {max_rate/1e6:.2f} Mbps")
+        
+        # 显示一些示例值
+        sample_size = min(5, M)
+        print(f"\n客户端到云的传输速率示例 (前{sample_size}个):")
+        for i in range(sample_size):
+            rate_mbps = r_client_to_cloud[i, 0] / 1e6
+            print(f"  客户端{i} → 云: {rate_mbps:.2f} Mbps")
+    else:
+        print("警告: 由于缺少云服务器位置信息，无法计算客户端到云的直接传输速率")
+    
+    # 返回精简的计算结果
+    return (client_nodes,          # 客户端节点列表
+            active_es_nodes,       # 活跃边缘服务器节点列表
+            association_matrix,    # 客户端到ES的关联矩阵
+            r_client_to_es,        # 客户端到ES的传输速率矩阵
+            r_es,                  # ES到ES的传输速率矩阵
+            r_es_to_cloud,         # ES到云的传输速率矩阵
+            r_client_to_cloud)     # 客户端到云的直接传输速率矩阵
 
 def validate_results(B_cloud, B_n, r, assignments, loads, max_capacity):
     N = len(B_n)
@@ -689,7 +813,26 @@ def validate_results(B_cloud, B_n, r, assignments, loads, max_capacity):
     print(f"Manual check: Load std (balance) = {np.std(loads):.2f} (lower is better)")
     print("Optimization Version: Hungarian + Simulated Annealing")
 
-def run_bandwidth_allocation(graphml_file=None, model_size=1e7, es_ratio=None, max_capacity=None, visualize=False):
+def run_bandwidth_allocation(graphml_file=None, es_ratio=None, max_capacity=None, visualize=False):
+    """
+    运行带宽分配算法的主函数，包含整个流程。
+
+    参数:
+    - graphml_file: GraphML网络拓扑文件路径
+    - es_ratio: 边缘服务器在总节点中的占比
+    - max_capacity: 每个边缘服务器可容纳的最大客户端数
+    - visualize: 是否生成可视化图
+
+    返回:
+    - bipartite_graph: 构建的二部图对象
+    - client_nodes: 客户端节点列表
+    - active_es_nodes: 活跃边缘服务器节点列表
+    - association_matrix: 客户端到边缘服务器的关联矩阵
+    - r_client_to_es: 客户端到边缘服务器的初始传输速率矩阵
+    - r_es: 边缘服务器间的传输速率矩阵
+    - r_es_to_cloud: 边缘服务器到云服务器的传输速率矩阵
+    - r_client_to_cloud: 客户端到云服务器的直接传输速率矩阵
+    """
     # 如果参数为None，从args_parser()获取默认值
     if graphml_file is None or es_ratio is None:
         args = args_parser()
@@ -704,29 +847,26 @@ def run_bandwidth_allocation(graphml_file=None, model_size=1e7, es_ratio=None, m
     bipartite_graph, client_nodes, es_nodes, distance_matrix, pos = build_bipartite_graph(
         graphml_file, es_ratio, visualize)
     if bipartite_graph is None:
-        return None, [], [], None, [], [], [], None, None, [], None, None
+        return None, [], [], None, None, None, None, None
     print("===============构建二部图==================")
     print("Bipartite Graph Built Successfully!")
     print(f"Total Client Nodes: {len(client_nodes)}")
     print(f"Total ES Nodes: {len(es_nodes)}")
     print(f"Distance Matrix Shape: {distance_matrix.shape}")
     print(f"Distance Matrix (first 5x5):\n{distance_matrix[:5, :min(5, len(es_nodes))]}")
-    r, r_random, assignments, loads, B_n, r_es, pos, active_es_nodes, r_initial, association_matrix, active_es_distance_matrix = allocate_bandwidth_eba(
-        client_nodes, es_nodes, distance_matrix, pos, model_size, max_capacity)
-    print(f"Final transmission rates r_m,n (bit/s, first 5x5):\n{r[:5, :min(5, len(es_nodes))]}")
-    # 使用与allocate_bandwidth_eba中相同的max_capacity值进行验证
-    validate_results(B_cloud=5e7, B_n=B_n, r=r, assignments=assignments, loads=loads, max_capacity=max_capacity)
     
-    # 如果需要可视化并且有云服务器位置，再次生成带有云服务器的可视化
-    if visualize and 'cloud_pos' in locals() and cloud_pos is not None:
-        visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, cloud_pos=cloud_pos)
-        print(f"Cloud Server Position: Longitude={cloud_pos[0]:.4f}, Latitude={cloud_pos[1]:.4f}")
-        print(f"ES-to-Cloud Transmission Rates (Mbps):")
-        for i, es in enumerate(active_es_nodes):
-            print(f"  ES{i} to Cloud: {r_es_to_cloud[i]/1e6:.2f} Mbps")
+    # 分配带宽并获取传输速率
+    client_nodes, active_es_nodes, association_matrix, r_client_to_es, r_es, r_es_to_cloud, r_client_to_cloud = establish_communication_channels(
+        client_nodes, es_nodes, distance_matrix, pos, max_capacity)
     
-    print("Optimization Version: Hungarian + Simulated Annealing")
-    return bipartite_graph, client_nodes, es_nodes, distance_matrix, r, r_random, assignments, loads, B_n, r_es, pos, active_es_nodes, r_initial, association_matrix, active_es_distance_matrix, cloud_pos, r_es_to_cloud
+    if r_client_to_es is not None:
+        print(f"Final transmission rates r_m,n (bit/s, first 5x5):\n{r_client_to_es[:min(5, len(client_nodes)), :min(5, len(es_nodes))]}")
+    
+    # # 使用与establish_communication_channels中相同的max_capacity值进行验证
+    # validate_results(B_cloud=5e7, B_n=B_n, r=r, assignments=assignments, loads=loads, max_capacity=max_capacity)
+    
+    # 返回精简的结果集
+    return bipartite_graph, client_nodes, active_es_nodes, association_matrix, r_client_to_es, r_es, r_es_to_cloud, r_client_to_cloud
 
 
 if __name__ == '__main__':
