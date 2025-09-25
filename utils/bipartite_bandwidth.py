@@ -483,7 +483,7 @@ import pulp
 import numpy as np
 import math
 
-
+'''
 def create_association_based_on_rate(rate_matrix, load_range_tolerance=0):
     """
     使用整数线性规划 (ILP) 找到最优分配方案。
@@ -528,8 +528,8 @@ def create_association_based_on_rate(rate_matrix, load_range_tolerance=0):
 
     # 约束: 负载均衡
     avg_load = M / N
-    min_load_allowed = max(0, math.floor(avg_load) - load_range_tolerance)
-    max_load_allowed = math.ceil(avg_load) + load_range_tolerance
+    min_load_allowed = 2# max(0, math.floor(avg_load) - load_range_tolerance)
+    max_load_allowed = 3#math.ceil(avg_load) + load_range_tolerance
 
     print(f"Average load: {avg_load:.2f}")
     print(f"Load constraint per server set to range: [{min_load_allowed}, {max_load_allowed}]")
@@ -585,7 +585,7 @@ def create_association_based_on_rate(rate_matrix):
         association_matrix[m, n] = 1
     
     return assignments, association_matrix
-'''
+
 def plot_assigned_graph(bipartite_graph, client_nodes, es_nodes, assignments, cluster_heads, C2, es_nodes_indices):
     pos = nx.get_node_attributes(bipartite_graph, 'pos')
     missing_pos = [n for n in client_nodes + es_nodes if n not in pos]

@@ -21,10 +21,17 @@ def mnist_iid(dataset, num_users):
     :return: dict of image index
     """
     num_items = int(len(dataset)/num_users)##计算每个用户应该拥有的样本数量
-    dict_users, all_idxs = {}, [i for i in range(len(dataset))] ##dict_users:每个用户的样本索引；all_idxs:包含所有数据索引的列表
-    for i in range(num_users):  ##给每个用户不重复地分配数据的索引
-        dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
-        all_idxs = list(set(all_idxs) - dict_users[i])
+    dict_users = {}
+    all_idxs = [i for i in range(len(dataset))] ##包含所有数据索引的列表
+    
+    for i in range(num_users):  ##给每个用户分配数据的索引
+        if len(all_idxs) >= num_items:
+            # 如果剩余数据足够，不重复分配
+            dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
+            all_idxs = list(set(all_idxs) - dict_users[i])
+        else:
+            # 如果剩余数据不够，允许重复分配
+            dict_users[i] = set(np.random.choice(len(dataset), num_items, replace=False))
     return dict_users
 
 
@@ -36,7 +43,6 @@ def mnist_noniid(dataset, num_users):
     :return:
     """
     num_shards, num_imgs = 200, 300 ##num_shards：将数据划分为的片段数量；num_imgs:每个片段的图像数量
-    idx_shard = [i for i in range(num_shards)]  ##每个片段的索引
     dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}  ##每个用户对应的样本索引
     idxs = np.arange(num_shards*num_imgs) ##创建一个包含所有图像索引的数组，就是一个0-的有序数组
     labels = dataset.train_labels.numpy() ##将数据集中样本的标签转换为numpy
@@ -47,10 +53,11 @@ def mnist_noniid(dataset, num_users):
     idxs = idxs_labels[0,:] ##idxs排序后的索引，相当于标签排序得到有序，对应索引跟随改变，得到新位置
        ##其将相同类别的图像集中在一起
 
-    # divide and assign 将数据分配给每个用户
+    # divide and assign 将数据分配给每个用户 - 允许重叠分配
+    shards_per_user = 2  # 每个用户分配的片段数量
     for i in range(num_users):
-        rand_set = set(np.random.choice(idx_shard, 2, replace=False))##随机选择两个片段且不重复
-        idx_shard = list(set(idx_shard) - rand_set) ##移除已被选择的片段
+        # 允许重复选择片段来支持更多用户
+        rand_set = set(np.random.choice(num_shards, shards_per_user, replace=False))
         for rand in rand_set: ##将所选片段
             dict_users[i] = np.concatenate((dict_users[i], idxs[rand*num_imgs:(rand+1)*num_imgs]), axis=0)
     return dict_users
@@ -64,10 +71,17 @@ def cifar_iid(dataset, num_users):
     :return: dict of image index
     """
     num_items = int(len(dataset)/num_users)  ##计算每个用户应该拥有的样本数量
-    dict_users, all_idxs = {}, [i for i in range(len(dataset))]
-    for i in range(num_users):  ##给每个用户不重复地分配数据的索引
-        dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
-        all_idxs = list(set(all_idxs) - dict_users[i])
+    dict_users = {}
+    all_idxs = [i for i in range(len(dataset))]
+    
+    for i in range(num_users):  ##给每个用户分配数据的索引
+        if len(all_idxs) >= num_items:
+            # 如果剩余数据足够，不重复分配
+            dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
+            all_idxs = list(set(all_idxs) - dict_users[i])
+        else:
+            # 如果剩余数据不够，允许重复分配
+            dict_users[i] = set(np.random.choice(len(dataset), num_items, replace=False))
     return dict_users
 
 # new
@@ -75,9 +89,9 @@ def cifar_noniid_adapted(dataset, num_users):
     """
     CIFAR数据集的Non-IID划分，基于MNIST Non-IID方法适配
     将10个类别划分为200个分片，每个客户端分配2个分片
+    允许片段重叠以支持更多用户
     """
     num_shards, num_imgs = 200, 250  # CIFAR每个分片250张图片
-    idx_shard = [i for i in range(num_shards)]
     dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}
     idxs = np.arange(num_shards * num_imgs)
     labels = np.array(dataset.targets)
@@ -87,10 +101,11 @@ def cifar_noniid_adapted(dataset, num_users):
     idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
     idxs = idxs_labels[0, :]
 
-    # 为每个客户端随机分配2个分片
+    # 为每个客户端随机分配2个分片 - 允许重叠分配
+    shards_per_user = 2  # 每个用户分配的片段数量
     for i in range(num_users):
-        rand_set = set(np.random.choice(idx_shard, 2, replace=False))
-        idx_shard = list(set(idx_shard) - rand_set)
+        # 允许重复选择片段来支持更多用户
+        rand_set = set(np.random.choice(num_shards, shards_per_user, replace=False))
         for rand in rand_set:
             dict_users[i] = np.concatenate(
                 (dict_users[i], idxs[rand * num_imgs:(rand + 1) * num_imgs]), axis=0)
@@ -102,20 +117,27 @@ def cifar100_iid(dataset, num_users):
     Sample I.I.D. client data from CIFAR100 dataset
     """
     num_items = int(len(dataset) / num_users)
-    dict_users, all_idxs = {}, [i for i in range(len(dataset))]
+    dict_users = {}
+    all_idxs = [i for i in range(len(dataset))]
+    
     for i in range(num_users):
-        dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
-        all_idxs = list(set(all_idxs) - dict_users[i])
+        if len(all_idxs) >= num_items:
+            # 如果剩余数据足够，不重复分配
+            dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
+            all_idxs = list(set(all_idxs) - dict_users[i])
+        else:
+            # 如果剩余数据不够，允许重复分配
+            dict_users[i] = set(np.random.choice(len(dataset), num_items, replace=False))
     return dict_users
 
 # 新增: CIFAR-100 Non-IID (适配自 mnist_noniid)
 def cifar100_noniid_adapted(dataset, num_users):
     """
     CIFAR-100数据集的Non-IID划分，基于MNIST Non-IID方法适配
-    将100个类别划分为200个分片，每个客户端分配2个分片 (CIFAR-100 train: 50000图像)
+    将100个类别划分为500个分片，每个客户端分配5个分片 (CIFAR-100 train: 50000图像)
+    允许片段重叠以支持更多用户
     """
-    num_shards, num_imgs = 500, 100  # 200 shards * 250 imgs = 50000
-    idx_shard = [i for i in range(num_shards)]
+    num_shards, num_imgs = 500, 100  # 500 shards * 100 imgs = 50000
     dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}
     idxs = np.arange(num_shards * num_imgs)
     labels = np.array(dataset.targets)
@@ -125,10 +147,11 @@ def cifar100_noniid_adapted(dataset, num_users):
     idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
     idxs = idxs_labels[0, :]
 
-    # 为每个客户端随机分配2个分片
+    # 为每个客户端随机分配5个分片 - 允许重叠分配
+    shards_per_user = 5  # 每个用户分配的片段数量
     for i in range(num_users):
-        rand_set = set(np.random.choice(idx_shard, 5, replace=False))
-        idx_shard = list(set(idx_shard) - rand_set)
+        # 允许重复选择片段来支持更多用户
+        rand_set = set(np.random.choice(num_shards, shards_per_user, replace=False))
         for rand in rand_set:
             dict_users[i] = np.concatenate(
                 (dict_users[i], idxs[rand * num_imgs:(rand + 1) * num_imgs]), axis=0)

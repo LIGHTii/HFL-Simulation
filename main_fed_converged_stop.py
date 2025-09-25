@@ -489,15 +489,15 @@ if __name__ == '__main__':
     # 为每个EH创建收敛检查器 - HFL随机B矩阵
     eh_checkers_random = {}
     for eh_idx in range(num_EHs):
-        eh_checkers_random[eh_idx] = ConvergenceChecker(patience = args.patience)
+        eh_checkers_random[eh_idx] = ConvergenceChecker(patience = args.EH_k3)
     
     # 为每个EH创建收敛检查器 - HFL聚类B矩阵  
     eh_checkers_cluster = {}
     for eh_idx in range(num_EHs):
-        eh_checkers_cluster[eh_idx] = ConvergenceChecker(patience = args.patience)
+        eh_checkers_cluster[eh_idx] = ConvergenceChecker(patience = args.EH_k3)
     
     # 为SFL创建收敛检查器
-    sfl_checker = ConvergenceChecker(patience = args.patience)
+    sfl_checker = ConvergenceChecker(patience = args.EH_k3)
 
     # 记录各机制的收敛状态
     converged_hfl_random = False
