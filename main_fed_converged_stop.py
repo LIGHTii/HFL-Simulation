@@ -358,12 +358,12 @@ if __name__ == '__main__':
     print(f"random:{t_client_to_es_random}, {t_es_to_eh_random}, {t_eh_to_cloud_random}")
     print(f"design:{t_client_to_es_design}, {t_es_to_eh_design}, {t_eh_to_cloud_design}")
     print(f"sfl:{t_client_to_cloud_sfl}")
-    t_hfl_random = t_client_to_es_random*k2 + t_es_to_eh_random*k3 + t_eh_to_cloud_random
-    t_hfl_design = t_client_to_es_design*k2 + t_es_to_eh_design*k3 + t_eh_to_cloud_design
-    t_sfl = t_client_to_cloud_sfl * k2 * k3  # SFL 直接通信到云端，乘以 k2*k3 次
-    print(f"hfl_random 预计单轮通信时间: {t_hfl_random:.6f}s")
-    print(f"hfl_design 预计单轮通信时间: {t_hfl_design:.6f}s")
-    print(f"sfl 预计单轮通信时间: {t_sfl:.6f}s")
+    t_hfl_random_sig = t_client_to_es_random * k2 + t_es_to_eh_random * k3 + t_eh_to_cloud_random
+    t_hfl_design_sig = t_client_to_es_design * k2 + t_es_to_eh_design * k3 + t_eh_to_cloud_design
+    t_sfl_sig = t_client_to_cloud_sfl * k2 * k3  # SFL 直接通信到云端，乘以 k2*k3 次
+    print(f"hfl_random 预计单轮通信时间: {t_hfl_random_sig:.6f}s")
+    print(f"hfl_design 预计单轮通信时间: {t_hfl_design_sig:.6f}s")
+    print(f"sfl 预计单轮通信时间: {t_sfl_sig:.6f}s")
     # 生成EH专属测试集
     print("\n--- 生成EH专属测试集 ---")
     print("采用改进的资源分配策略：允许测试样本在多个EH测试集中重复出现")
@@ -477,6 +477,9 @@ if __name__ == '__main__':
     acc_test_hfl_random = []
     acc_test_hfl_cluster = []
     acc_test_sfl = []
+    t_hfl_random = 0
+    t_hfl_design = 0
+    t_sfl = 0
 
     # 记录实际运行的epoch数
     final_epoch = args.epochs
@@ -486,16 +489,16 @@ if __name__ == '__main__':
     # 为每个EH创建收敛检查器 - HFL随机B矩阵
     eh_checkers_random = {}
     for eh_idx in range(num_EHs):
-        eh_checkers_random[eh_idx] = ConvergenceChecker()
+        eh_checkers_random[eh_idx] = ConvergenceChecker(patience = args.patience)
     
     # 为每个EH创建收敛检查器 - HFL聚类B矩阵  
     eh_checkers_cluster = {}
     for eh_idx in range(num_EHs):
-        eh_checkers_cluster[eh_idx] = ConvergenceChecker()
+        eh_checkers_cluster[eh_idx] = ConvergenceChecker(patience = args.patience)
     
     # 为SFL创建收敛检查器
-    sfl_checker = ConvergenceChecker()
-    
+    sfl_checker = ConvergenceChecker(patience = args.patience)
+
     # 记录各机制的收敛状态
     converged_hfl_random = False
     converged_hfl_cluster = False
@@ -614,20 +617,15 @@ if __name__ == '__main__':
                 # --- HFL 聚合 (Client -> ES) - 只对未收敛的机制进行聚合 ---
                 if not converged_hfl_random:
                     ESs_ws_input_hfl_random = FedAvg_layered(w_locals_output_hfl_random, C1_random)
+                    t_hfl_random += t_client_to_es_random
                 else:
                     print(f"  [Skip] HFL随机B矩阵已收敛，跳过ES层聚合")
                 
                 if not converged_hfl_cluster:
                     ESs_ws_input_hfl_cluster = FedAvg_layered(w_locals_output_hfl_cluster, C1_cluster)
+                    t_hfl_design += t_client_to_es_design
                 else:
                     print(f"  [Skip] HFL聚类B矩阵已收敛，跳过ES层聚合")
-
-                # --- SFL 全局聚合 (Client -> Cloud) ---
-                if not converged_sfl:
-                    w_glob_sfl = FedAvg(w_locals_output_sfl)
-                    net_glob_sfl.load_state_dict(w_glob_sfl)
-                else:
-                    print(f"  [Skip] SFL已收敛，跳过全局聚合")
 
                 # --- 记录损失 ---
                 # 只为实际训练的模型计算平均损失，已收敛的模型损失为0
@@ -673,13 +671,23 @@ if __name__ == '__main__':
             # HFL 聚合 (ES -> EH) - 只对未收敛的机制进行聚合
             if not converged_hfl_random:
                 EHs_ws_hfl_random = FedAvg_layered(ESs_ws_input_hfl_random, C2_random)
+                t_hfl_random += t_es_to_eh_random
             else:
                 print(f"  [Skip] HFL随机B矩阵已收敛，跳过EH层聚合")
             
             if not converged_hfl_cluster:
                 EHs_ws_hfl_cluster = FedAvg_layered(ESs_ws_input_hfl_cluster, C2_cluster)
+                t_hfl_design += t_es_to_eh_design
             else:
                 print(f"  [Skip] HFL聚类B矩阵已收敛，跳过EH层聚合")
+            
+            # --- SFL 全局聚合 (Client -> Cloud) - 在EH层聚合时机执行 ---
+            if not converged_sfl:
+                w_glob_sfl = FedAvg(w_locals_output_sfl)
+                net_glob_sfl.load_state_dict(w_glob_sfl)
+                t_sfl += t_client_to_cloud_sfl
+            else:
+                print(f"  [Skip] SFL已收敛，跳过全局聚合")
             
             # --- 在每次EH聚合后测试EH模型在专属测试集上的性能 ---
             print(f"\n[EH Testing] Epoch {epoch} | EH_Round {t3+1}/{k3} - 测试EH模型性能...")
@@ -849,12 +857,14 @@ if __name__ == '__main__':
         if not converged_hfl_random:
             w_glob_hfl_random = FedAvg(EHs_ws_hfl_random)
             net_glob_hfl_random.load_state_dict(w_glob_hfl_random)
+            t_hfl_random += t_eh_to_cloud_random
         else:
             print(f"  [Skip] HFL随机B矩阵已收敛，跳过全局聚合")
         
         if not converged_hfl_cluster:
             w_glob_hfl_cluster = FedAvg(EHs_ws_hfl_cluster)
             net_glob_hfl_cluster.load_state_dict(w_glob_hfl_cluster)
+            t_hfl_design += t_eh_to_cloud_design
         else:
             print(f"  [Skip] HFL聚类B矩阵已收敛，跳过全局聚合")
 
@@ -1090,6 +1100,19 @@ if __name__ == '__main__':
         print(f"可视化生成失败: {e}")
         print("请检查数据格式或手动运行visualization_tool.py")
     
+    # 保存通信时间结果到单独的CSV文件
+    communication_filename = f"communication_results_{timestamp}.csv"
+    communication_csv_path = f'./results/{communication_filename}'
+    
+    with open(communication_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['model_type', 'total_communication_time', 'epochs', 'avg_communication_per_epoch'])
+        writer.writerow(['HFL_Random_B', f"{t_hfl_random:.6f}", final_epoch, f"{t_hfl_random/final_epoch:.6f}"])
+        writer.writerow(['HFL_Cluster_B', f"{t_hfl_design:.6f}", final_epoch, f"{t_hfl_design/final_epoch:.6f}"])
+        writer.writerow(['SFL', f"{t_sfl:.6f}", final_epoch, f"{t_sfl/final_epoch:.6f}"])
+    
+    print(f"通信时间结果已保存到: {communication_csv_path}")
+
     print(f"\n=== 实验总结 ===")
     print("本次实验对比了三种联邦学习方法:")
     print("1. HFL (Random B Matrix) - 使用随机生成的ES-EH关联矩阵")
@@ -1101,6 +1124,12 @@ if __name__ == '__main__':
     print(f"数据集: {args.dataset}, 模型: {args.model}, IID: {args.iid}")
     if not args.iid:
         print(f"非IID参数: beta={args.beta}")
+    
+    print(f"\n=== 通信开销分析 ===")
+    print(f"总通信时间对比:")
+    print(f"  • HFL_Random: {t_hfl_random:.6f}s (平均每轮: {t_hfl_random/final_epoch:.6f}s)")
+    print(f"  • HFL_Cluster: {t_hfl_design:.6f}s (平均每轮: {t_hfl_design/final_epoch:.6f}s)")
+    print(f"  • SFL: {t_sfl:.6f}s (平均每轮: {t_sfl/final_epoch:.6f}s)")
     
     print(f"\n=== 收敛性分析 ===")
     print(f"收敛检查器参数: patience=5, min_delta=0.001")

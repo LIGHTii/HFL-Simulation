@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import torch
 import copy
 from models.Update import LocalUpdate  # 导入LocalUpdate
-from models.cluster1 import cluster1
+from models.cluster2 import cluster2
 # ==================================== ES聚类 ========================================
 def model_to_vector(model_params):
     """将模型参数字典转换为向量"""
@@ -298,7 +298,7 @@ def spectral_clustering_es(es_models, epsilon=None):
     print(f"[谱聚类] 模型向量矩阵形状: {model_vectors.shape}")
 
     # 进行谱聚类
-    cluster_num, cluster_labels = cluster1(model_vectors, epsilon=epsilon)
+    cluster_num, cluster_labels = cluster2(model_vectors, epsilon=epsilon)
     print(f"[谱聚类] 自动确定的最佳簇数: {cluster_num}")
 
     # 构建B矩阵

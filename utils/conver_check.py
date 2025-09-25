@@ -40,7 +40,7 @@ class ConvergenceChecker:
             # 只基于损失进行检查
             if current_loss < self.best_loss - self.min_delta_loss:
                 self.best_loss = current_loss
-                self.wait_rounds = 0
+                self.wait_rounds = min(0, self.wait_rounds-1)
                 return False, f"验证损失改善至 {self.best_loss:.4f}."
             else:
                 self.wait_rounds += 1
