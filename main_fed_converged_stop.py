@@ -31,15 +31,12 @@ from utils.options import args_parser
 from utils.data_partition import get_client_datasets
 from utils.visualize_client_data import visualize_client_data_distribution
 from utils.eh_test_utils import EHTestsetGenerator, test_eh_model
-from utils.comm_utils import (
-    save_client_data_distribution, generate_data_config_hash, print_available_data_files,
-    calculate_comm_overhead_sfl, calculate_comm_overhead_hfl_bipartite, calculate_comm_overhead_hfl_random
-)
 from utils.bipartite_bandwidth import run_bandwidth_allocation, calculate_distance
-from models.Update import LocalUpdate
+from utils.comm_utils import calculate_transmission_time, get_model_size_in_bits, select_eh
 from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, MobileNetCifar, LeNet5
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
+from models.Update import LocalUpdate
 from models.ES_cluster import (
     train_initial_models,
     aggregate_es_models, spectral_clustering_es,
@@ -87,7 +84,6 @@ def build_model(args, dataset_train):
     # print("--------------------")
     return net_glob
 
-
 def get_A_random(num_users, num_ESs):
     A = np.zeros((num_users, num_ESs), dtype=int)
 
@@ -110,23 +106,6 @@ def get_A_random(num_users, num_ESs):
 
     return A
 
-# def get_A(assignments, num_users, num_ESs, client_id_to_int, es_id_to_int):
-#     A = np.zeros((num_users, num_ESs), dtype=int)
-#     for client_id, es_id in assignments:
-#         if client_id in client_id_to_int and es_id in es_id_to_int:
-#             m = client_id_to_int[client_id]
-#             n = es_id_to_int[es_id]
-#             A[m][n] = 1
-#         else:
-#             print(f"Warning: Client ID '{client_id}' or ES ID '{es_id}' not found in mapping.")
-#     return A
-
-# def get_A_comm(assignments):
-#     A = np.zeros((num_users, num_ESs), dtype=int)
-#     for m, n in assignments:
-#         A[m][n] = 1
-#     return A
-
 def get_B(num_ESs, num_EHs):
     B = np.zeros((num_ESs, num_EHs), dtype=int)
 
@@ -136,7 +115,6 @@ def get_B(num_ESs, num_EHs):
         B[i, random_index] = 1
 
     return B
-
 
 def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distributions):
     """
@@ -185,7 +163,6 @@ def build_hierarchy(A, B):
                 C2[k].append(j)
 
     return C1, C2
-
 
 def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl_random, w_input_hfl_cluster, w_sfl_global, client_classes=None):
     """
@@ -253,6 +230,28 @@ if __name__ == '__main__':
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
 
+    # 先运行带宽分配算法获取实际的客户端数量
+    print("正在分析网络拓扑并确定客户端数量...")
+    bipartite_graph, client_nodes, active_es_nodes, A_design, r_client_to_es, r_es, r_es_to_cloud, r_client_to_cloud = run_bandwidth_allocation(
+        graphml_file=args.graphml_file, 
+        es_ratio=args.es_ratio, 
+        max_capacity=args.max_capacity, 
+        visualize=True)
+    
+    if bipartite_graph is None:
+        print("Failed to build bipartite graph, exiting.")
+        exit(1)
+    
+    # 根据实际客户端数量更新args.num_users
+    actual_num_users = len(client_nodes)
+    print(f"网络拓扑分析完成：实际客户端数量为 {actual_num_users}")
+    print(f"原始参数设置：args.num_users = {args.num_users}")
+    
+    # 更新参数以匹配实际客户端数量
+    args.num_users = actual_num_users
+    print(f"已更新参数：args.num_users = {args.num_users}")
+
+    # 现在使用更新后的参数生成数据分配
     dataset_train, dataset_test, dict_users, client_classes = get_data(args)
 
     # 打印 FedRS 配置信息
@@ -279,33 +278,13 @@ if __name__ == '__main__':
         print(f"\n使用联邦学习方法: {args.method}\n")
 
     net_glob = build_model(args, dataset_train)
-
-    # 运行带宽分配算法获取节点分布和通信速率
-    bipartite_graph, client_nodes, active_es_nodes, A_design, r_client_to_es, r_es, r_es_to_cloud, r_client_to_cloud = run_bandwidth_allocation(
-        graphml_file=args.graphml_file, 
-        es_ratio=args.es_ratio, 
-        max_capacity=args.max_capacity, 
-        visualize=True)
-    if bipartite_graph is None:
-        print("Failed to build bipartite graph, exiting.")
-        return
-
-    # # 创建节点ID映射字典：字符串ID -> 整数ID
-    # client_id_to_int = {client_id: i for i, client_id in enumerate(client_nodes)}
-    # int_to_client_id = {i: client_id for i, client_id in enumerate(client_nodes)}
-    # es_id_to_int = {es_id: i for i, es_id in enumerate(es_nodes)}
-    # int_to_es_id = {i: es_id for i, es_id in enumerate(es_nodes)}
-    
-    # 打印映射信息
-    print(f"\n=== 节点ID映射信息 ===")
+    # 验证数据一致性
+    print(f"\n=== 数据一致性验证 ===")
     print(f"客户端节点总数: {len(client_nodes)}")
-    print(f"边缘服务器节点总数: {len(es_nodes)}")
-    print(f"客户端ID映射示例 (前5个):")
-    for i in range(min(5, len(client_nodes))):
-        print(f"  '{client_nodes[i]}' -> {i}")
-    print(f"边缘服务器ID映射示例 (前5个):")
-    for i in range(min(5, len(es_nodes))):
-        print(f"  '{es_nodes[i]}' -> {i}")
+    print(f"活跃边缘服务器节点总数: {len(active_es_nodes)}")
+    print(f"args.num_users: {args.num_users}")
+    print(f"dict_users键的数量: {len(dict_users)}")
+    print(f"dict_users键的范围: {min(dict_users.keys())} - {max(dict_users.keys())}")
     print("=" * 25)
 
     net_glob.train()
@@ -313,13 +292,12 @@ if __name__ == '__main__':
     # 初始化全局权重
     w_glob = net_glob.state_dict()
     num_users = len(client_nodes)
-    num_ESs = len(es_nodes)
+    num_ESs = len(active_es_nodes)
     k2 = args.ES_k2
     k3 = args.EH_k3
     num_processes = args.num_processes
 
-    # A = get_A(assignments, num_users, num_ESs, client_id_to_int, es_id_to_int)
-    A = association_matrix  # 使用关联矩阵作为A矩阵
+    A_random = get_A_random(num_users, num_ESs)
 
     # 使用谱聚类生成B矩阵（替换原来的随机B矩阵）
     print("开始初始训练和谱聚类...")
@@ -331,37 +309,72 @@ if __name__ == '__main__':
 
     # 2. 使用谱聚类生成B矩阵
     B_cluster = get_B_cluster(
-        args, w_locals, A, dict_users, net_glob, client_label_distributions
+        args, w_locals, A_design, dict_users, net_glob, client_label_distributions
     )
     num_EHs = B_cluster.shape[1]
     
     # 3. 同时生成随机B矩阵用于对比
     B_random = get_B(num_ESs, num_EHs)
 
-    # 构建两套层级结构
+    # 构建两套层级结构（用于联邦学习聚合）
+    C1_random, C2_random = build_hierarchy(A_random, B_random)
+    C1_cluster, C2_cluster = build_hierarchy(A_design, B_cluster)
 
-    C1_random, C2_random = build_hierarchy(A, B_random)
-    C1_cluster, C2_cluster = build_hierarchy(A, B_cluster)
-    
+    # 构建通信实际的关联矩阵（用于通信开销计算）
+    # 两种A关联矩阵直接可用，B关联矩阵为（es，簇）形式，需转化为es-es，还需生成es-cloud
+    model_size = get_model_size_in_bits(w_glob)
+    B_random_comm, C_random_comm = select_eh(B_random, r_es, r_es_to_cloud, model_size)
+    B_cluster_comm, C_cluster_comm = select_eh(B_cluster, r_es, r_es_to_cloud, model_size)
     print("C1_random (一级->客户端):", C1_random)
     print("C2_random (二级->一级):", C2_random)
     print("C1_cluster (一级->客户端):", C1_cluster)
     print("C2_cluster (二级->一级):", C2_cluster)
-    
+    t_client_to_es_random = calculate_transmission_time(model_size, r_client_to_es, A_random)
+    t_client_to_es_design = calculate_transmission_time(model_size, r_client_to_es, A_design)
+    t_es_to_eh_random = calculate_transmission_time(model_size, r_es, B_random_comm)
+    t_es_to_eh_design = calculate_transmission_time(model_size, r_es, B_cluster_comm)
+    t_eh_to_cloud_random = calculate_transmission_time(model_size, r_es_to_cloud, C_random_comm)
+    t_eh_to_cloud_design = calculate_transmission_time(model_size, r_es_to_cloud, C_cluster_comm)
+    t_sfl = calculate_transmission_time(model_size, r_client_to_cloud, np.ones((num_users, 1), dtype=int))
+    t_hfl_random = t_client_to_es_random*k2 + t_es_to_eh_random*k3 + t_eh_to_cloud_random
+    t_hfl_design = t_client_to_es_design*k2 + t_es_to_eh_design*k3 + t_eh_to_cloud_design
+    t_sfl = t_sfl * k2 * k3  # SFL 直接通信到云端，乘以 k2*k3 次
+    print(f"hfl_random 单轮通信时间: {t_hfl_random:.6f}s")
+    print(f"hfl_design 单轮通信时间: {t_hfl_design:.6f}s")
+    print(f"sfl 单轮通信时间: {t_sfl:.6f}s")
     # 生成EH专属测试集
     print("\n--- 生成EH专属测试集 ---")
+    print("采用改进的资源分配策略：允许测试样本在多个EH测试集中重复出现")
+    print("这确保每个EH都能获得与其下游客户端分布匹配的个性化测试集")
+    
     # 为随机B矩阵生成EH专属测试集
+    print("\n🎲 为随机B矩阵生成EH专属测试集...")
     eh_testsets_random, eh_label_distributions_random = EHTestsetGenerator.create_eh_testsets(
-        dataset_test, A, B_random, C1_random, C2_random, dataset_train, dict_users, visualize=True
+        dataset_test, A_random, B_random, C1_random, C2_random, dataset_train, dict_users, visualize=True
     )
     
     # 为聚类B矩阵生成EH专属测试集
+    print("\n🧩 为聚类B矩阵生成EH专属测试集...")
     eh_testsets_cluster, eh_label_distributions_cluster = EHTestsetGenerator.create_eh_testsets(
-        dataset_test, A, B_cluster, C1_cluster, C2_cluster, dataset_train, dict_users, visualize=True
+        dataset_test, A_design, B_cluster, C1_cluster, C2_cluster, dataset_train, dict_users, visualize=True
     )
     
-    print(f"已生成随机B矩阵的 {len(eh_testsets_random)} 个EH专属测试集")
-    print(f"已生成聚类B矩阵的 {len(eh_testsets_cluster)} 个EH专属测试集")
+    print(f"\n✅ 测试集生成完成!")
+    print(f"随机B矩阵: 已生成 {len(eh_testsets_random)} 个EH专属测试集")
+    print(f"聚类B矩阵: 已生成 {len(eh_testsets_cluster)} 个EH专属测试集")
+    
+    # 打印每个EH测试集的详细信息
+    print(f"\n📊 随机B矩阵 - EH测试集统计:")
+    for eh_idx, testset in eh_testsets_random.items():
+        unique_samples = len(np.unique(testset))
+        total_samples = len(testset)
+        print(f"  EH {eh_idx}: 总样本={total_samples}, 唯一样本={unique_samples}, 重复率={1-unique_samples/total_samples:.1%}")
+    
+    print(f"\n📊 聚类B矩阵 - EH测试集统计:")
+    for eh_idx, testset in eh_testsets_cluster.items():
+        unique_samples = len(np.unique(testset))
+        total_samples = len(testset)
+        print(f"  EH {eh_idx}: 总样本={total_samples}, 唯一样本={unique_samples}, 重复率={1-unique_samples/total_samples:.1%}")
 
     # 打印FedRS配置信息
     print(f"\n--- FedRS Configuration ---")

@@ -113,54 +113,112 @@ class EHTestsetGenerator:
         # 创建每个EH的专属测试集
         eh_testsets = {}
         
-        # 按类别索引测试数据
+        # 按类别索引测试数据（允许重复使用）
         test_indices_by_class = {}
         for c in range(num_classes):
             test_indices_by_class[c] = np.where(test_labels == c)[0]
             np.random.shuffle(test_indices_by_class[c])
         
-        # 按照标签分布比例为每个EH采样测试数据
-        test_size_per_eh = len(dataset_test) // num_EHs  # 每个EH获得的测试集大小
+        # 计算每个EH的目标测试集大小
+        # 使用固定大小确保所有EH都有足够的测试样本
+        min_test_size_per_eh = max(500, len(dataset_test) // (num_EHs * 2))  # 至少500个样本，或者平均值的一半
+        print(f"每个EH的目标测试集大小: {min_test_size_per_eh}")
         
         for eh_idx, label_dist in eh_label_distributions.items():
+            print(f"\n为EH {eh_idx} 生成个性化测试集...")
             testset_indices = []
             
-            # 确保分布中没有零值（为了防止数值错误）
-            epsilon = 1e-10
-            smoothed_dist = label_dist + epsilon
-            smoothed_dist = smoothed_dist / smoothed_dist.sum()
+            # 处理零分布情况：如果某个EH没有任何训练数据，使用均匀分布
+            if np.sum(label_dist) == 0:
+                print(f"  警告: EH {eh_idx} 没有下游客户端，使用均匀分布")
+                uniform_dist = np.ones(num_classes) / num_classes
+                smoothed_dist = uniform_dist
+            else:
+                # 确保分布中没有零值（为了防止数值错误），但保持原有分布特性
+                epsilon = 1e-6  # 减小epsilon值，减少对原分布的影响
+                smoothed_dist = label_dist + epsilon
+                smoothed_dist = smoothed_dist / smoothed_dist.sum()
             
-            # 按类别采样
+            print(f"  EH {eh_idx} 标签分布: {smoothed_dist}")
+            
+            # 按类别采样（允许重复使用测试样本）
+            actual_samples_per_class = []
             for c in range(num_classes):
                 # 根据标签分布计算该类别应采样的样本数
-                num_samples = int(test_size_per_eh * smoothed_dist[c])
+                target_samples = int(min_test_size_per_eh * smoothed_dist[c])
                 
-                # 确保不超过该类别的可用样本数
-                available = len(test_indices_by_class[c])
-                num_samples = min(num_samples, available)
+                # 获取该类别的所有可用样本
+                available_indices = test_indices_by_class[c]
                 
-                # 从该类别中采样
-                if num_samples > 0:
-                    selected_indices = test_indices_by_class[c][:num_samples]
-                    test_indices_by_class[c] = test_indices_by_class[c][num_samples:]  # 更新剩余样本
-                    testset_indices.extend(selected_indices)
-            
-            # 为了确保每个EH有足够多的测试样本，如果不足，从剩余样本中随机补充
-            remaining_needed = test_size_per_eh - len(testset_indices)
-            if remaining_needed > 0:
-                remaining_indices = []
-                for c in range(num_classes):
-                    remaining_indices.extend(test_indices_by_class[c])
+                if len(available_indices) == 0:
+                    print(f"    类别 {c}: 无可用样本")
+                    actual_samples_per_class.append(0)
+                    continue
                 
-                # 如果还有足够的剩余样本，则随机补充
-                if len(remaining_indices) >= remaining_needed:
-                    np.random.shuffle(remaining_indices)
-                    testset_indices.extend(remaining_indices[:remaining_needed])
+                # 如果需要的样本数超过可用样本数，则进行重复采样
+                if target_samples <= len(available_indices):
+                    # 直接采样，不重复
+                    selected_indices = np.random.choice(available_indices, size=target_samples, replace=False)
                 else:
-                    # 如果剩余样本不足，则使用所有剩余样本
-                    testset_indices.extend(remaining_indices)
+                    # 需要重复采样
+                    selected_indices = np.random.choice(available_indices, size=target_samples, replace=True)
+                    print(f"    类别 {c}: 需要 {target_samples} 个样本，但只有 {len(available_indices)} 个可用，进行重复采样")
+                
+                testset_indices.extend(selected_indices)
+                actual_samples_per_class.append(len(selected_indices))
+            
+            print(f"  实际每类样本数: {actual_samples_per_class}")
+            print(f"  EH {eh_idx} 测试集总大小: {len(testset_indices)}")
+            
+            # 如果总样本数仍然不足，进行全局补充采样
+            if len(testset_indices) < min_test_size_per_eh:
+                remaining_needed = min_test_size_per_eh - len(testset_indices)
+                print(f"  需要补充 {remaining_needed} 个样本")
+                
+                # 从所有测试样本中按分布比例补充
+                all_test_indices = list(range(len(dataset_test)))
+                
+                # 按当前分布补充采样
+                additional_indices = []
+                for c in range(num_classes):
+                    additional_needed = int(remaining_needed * smoothed_dist[c])
+                    if additional_needed > 0:
+                        class_indices = test_indices_by_class[c]
+                        if len(class_indices) > 0:
+                            additional_selected = np.random.choice(
+                                class_indices, 
+                                size=min(additional_needed, len(class_indices)), 
+                                replace=True
+                            )
+                            additional_indices.extend(additional_selected)
+                
+                testset_indices.extend(additional_indices)
+                print(f"  补充后测试集总大小: {len(testset_indices)}")
             
             eh_testsets[eh_idx] = np.array(testset_indices)
+        
+        # 验证和统计生成的测试集
+        print(f"\n=== 测试集生成结果验证 ===")
+        total_unique_samples = set()
+        total_samples_used = 0
+        
+        for eh_idx, testset in eh_testsets.items():
+            unique_samples = set(testset)
+            total_unique_samples.update(unique_samples)
+            total_samples_used += len(testset)
+            
+            print(f"EH {eh_idx}: 测试集大小={len(testset)}, 唯一样本={len(unique_samples)}")
+        
+        coverage_rate = len(total_unique_samples) / len(dataset_test)
+        avg_reuse_rate = total_samples_used / len(total_unique_samples) if len(total_unique_samples) > 0 else 0
+        
+        print(f"\n总体统计:")
+        print(f"  原始测试集大小: {len(dataset_test)}")
+        print(f"  使用的唯一样本数: {len(total_unique_samples)}")
+        print(f"  测试集覆盖率: {coverage_rate:.1%}")
+        print(f"  平均样本重复使用率: {avg_reuse_rate:.2f}x")
+        print(f"  总使用样本数: {total_samples_used}")
+        print("=" * 35)
         
         # 可视化EH的标签分布和对应的测试集分布
         if visualize:
@@ -184,8 +242,12 @@ class EHTestsetGenerator:
         try:
             # 计算测试集的分布
             eh_test_distributions = {}
+            print("\n=== EH测试集分布统计 ===")
             for eh_idx, test_indices in eh_testsets.items():
                 test_dist = np.zeros(num_classes)
+                unique_indices = len(np.unique(test_indices))  # 统计唯一样本数
+                total_samples = len(test_indices)  # 统计总样本数（包含重复）
+                
                 for idx in test_indices:
                     label = test_labels[idx]
                     if isinstance(label, np.ndarray):
@@ -197,6 +259,18 @@ class EHTestsetGenerator:
                     test_dist = test_dist / test_dist.sum()
                 
                 eh_test_distributions[eh_idx] = test_dist
+                
+                # 打印统计信息
+                print(f"EH {eh_idx}: 总样本={total_samples}, 唯一样本={unique_indices}, 重复率={1-unique_indices/total_samples:.2%}")
+                print(f"  测试集分布: {test_dist}")
+                
+                # 计算与期望分布的差异
+                expected_dist = eh_label_distributions[eh_idx]
+                if np.sum(expected_dist) > 0:
+                    expected_dist = expected_dist / np.sum(expected_dist)
+                    kl_divergence = np.sum(test_dist * np.log((test_dist + 1e-10) / (expected_dist + 1e-10)))
+                    print(f"  与期望分布的KL散度: {kl_divergence:.4f}")
+            print("=" * 30)
             
             # 检查数据维度
             for eh_idx in sorted(eh_label_distributions.keys()):
@@ -209,8 +283,8 @@ class EHTestsetGenerator:
                         corrected_dist[i] = eh_label_distributions[eh_idx][i]
                     eh_label_distributions[eh_idx] = corrected_dist
             
-            # 绘制对比图
-            fig, axes = plt.subplots(num_ehs, 2, figsize=(12, 3 * num_ehs))
+            # 绘制对比图 - 增加一列显示分布差异
+            fig, axes = plt.subplots(num_ehs, 3, figsize=(18, 3 * num_ehs))
             
             # 处理只有一个EH的情况
             if num_ehs == 1:
@@ -222,27 +296,62 @@ class EHTestsetGenerator:
                     print(f"警告：图表索引 {i} 超出范围，已跳过 EH {eh_idx}")
                     continue
                 
-                # 训练数据分布
-                ax1 = axes[i, 0]
                 x_range = np.arange(num_classes)  # 明确创建x轴数值范围
-                ax1.bar(x_range, eh_label_distributions[eh_idx])
-                ax1.set_title(f'EH {eh_idx} 训练数据分布')
+                
+                # 训练数据分布（期望分布）
+                ax1 = axes[i, 0]
+                expected_dist = eh_label_distributions[eh_idx]
+                if np.sum(expected_dist) > 0:
+                    expected_dist = expected_dist / np.sum(expected_dist)
+                ax1.bar(x_range, expected_dist, alpha=0.7, color='skyblue')
+                ax1.set_title(f'EH {eh_idx} 期望分布\n(基于下游客户端)')
                 ax1.set_xlabel('类别')
                 ax1.set_ylabel('比例')
                 ax1.set_xticks(range(num_classes))
+                ax1.set_ylim(0, max(0.1, np.max(expected_dist) * 1.1))
                 
-                # 测试数据分布
+                # 测试数据分布（实际分布）
                 ax2 = axes[i, 1]
-                ax2.bar(x_range, eh_test_distributions[eh_idx])
-                ax2.set_title(f'EH {eh_idx} 测试数据分布')
+                actual_dist = eh_test_distributions[eh_idx]
+                ax2.bar(x_range, actual_dist, alpha=0.7, color='lightcoral')
+                ax2.set_title(f'EH {eh_idx} 实际测试分布\n(样本数: {len(eh_testsets[eh_idx])})')
                 ax2.set_xlabel('类别')
                 ax2.set_ylabel('比例')
                 ax2.set_xticks(range(num_classes))
+                ax2.set_ylim(0, max(0.1, np.max(actual_dist) * 1.1))
+                
+                # 分布差异对比
+                ax3 = axes[i, 2]
+                width = 0.35
+                x_pos1 = x_range - width/2
+                x_pos2 = x_range + width/2
+                ax3.bar(x_pos1, expected_dist, width, label='期望分布', alpha=0.7, color='skyblue')
+                ax3.bar(x_pos2, actual_dist, width, label='实际分布', alpha=0.7, color='lightcoral')
+                ax3.set_title(f'EH {eh_idx} 分布对比')
+                ax3.set_xlabel('类别')
+                ax3.set_ylabel('比例')
+                ax3.set_xticks(range(num_classes))
+                ax3.legend()
+                
+                # 计算并显示相似度指标
+                if np.sum(expected_dist) > 0 and np.sum(actual_dist) > 0:
+                    # 计算余弦相似度
+                    cosine_sim = np.dot(expected_dist, actual_dist) / (
+                        np.linalg.norm(expected_dist) * np.linalg.norm(actual_dist) + 1e-10
+                    )
+                    ax3.text(0.02, 0.98, f'余弦相似度: {cosine_sim:.3f}', 
+                            transform=ax3.transAxes, verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
             
             plt.tight_layout()
-            plt.savefig('./save/eh_distributions.png')
+            
+            # 确保保存目录存在
+            import os
+            os.makedirs('./save', exist_ok=True)
+            
+            plt.savefig('./save/eh_distributions_enhanced.png', dpi=300, bbox_inches='tight')
             plt.close()
-            print("EH分布对比图已保存到 ./save/eh_distributions.png")
+            print("增强版EH分布对比图已保存到 ./save/eh_distributions_enhanced.png")
         except Exception as e:
             print(f"可视化EH分布时出错: {e}")
             print("跳过可视化，继续执行程序")
