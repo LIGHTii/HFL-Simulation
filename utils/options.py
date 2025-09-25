@@ -91,6 +91,10 @@ def args_parser():
     parser.add_argument('--data_save_dir', type=str, default='./saved_data/',
                        help="directory to save client data distribution files")
     
+    parser.add_argument('--early_stopping', action='store_true', help='Enable early stopping')
+    parser.add_argument('--patience', type=int, default=3, help='Patience for early stopping')
+    parser.add_argument('--min_delta', type=float, default=0.005, help='Min delta for early stopping')
+
     args = parser.parse_args()
     # 动态设置num_classes和num_channels
     if args.dataset == 'mnist':

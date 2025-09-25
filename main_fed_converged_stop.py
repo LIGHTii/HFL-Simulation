@@ -43,6 +43,7 @@ from models.ES_cluster import (
     calculate_es_label_distributions,
     visualize_clustering_comparison
 )
+from utils.conver_check import ConvergenceChecker
 import numpy as np
 
 def build_model(args, dataset_train):
@@ -164,13 +165,19 @@ def build_hierarchy(A, B):
 
     return C1, C2
 
-def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl_random, w_input_hfl_cluster, w_sfl_global, client_classes=None):
+def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl_random, w_input_hfl_cluster, w_sfl_global, 
+                 client_classes=None, train_hfl_random=True, train_hfl_cluster=True, train_sfl=True):
     """
     单个客户端的训练函数，用于被多进程调用。
     现在支持三种模型：SFL、HFL(随机B矩阵)、HFL(聚类B矩阵)
 
     注意：为了兼容多进程，我们不直接传递大型模型对象，
     而是传递模型权重(state_dict)和模型架构信息(args)，在子进程中重新构建模型。
+    
+    Args:
+        train_hfl_random: 是否训练HFL随机B矩阵模型
+        train_hfl_cluster: 是否训练HFL聚类B矩阵模型
+        train_sfl: 是否训练SFL模型
     """
     # 在子进程中重新构建模型
     local_net_hfl_random = build_model(args, dataset_train)
@@ -180,20 +187,32 @@ def train_client(args, user_idx, dataset_train, dict_users, w_input_hfl_random, 
     # 获取当前客户端的类别信息
     user_classes = client_classes.get(user_idx, None) if client_classes else None
     
-    # --- 训练HFL模型 (使用随机B矩阵) ---
-    local_random = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
-    local_net_hfl_random.load_state_dict(w_input_hfl_random)
-    w_hfl_random, loss_hfl_random = local_random.train(net=local_net_hfl_random.to(args.device))
+    # --- 训练HFL模型 (使用随机B矩阵) - 仅在未收敛时训练 ---
+    if train_hfl_random:
+        local_random = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
+        local_net_hfl_random.load_state_dict(w_input_hfl_random)
+        w_hfl_random, loss_hfl_random = local_random.train(net=local_net_hfl_random.to(args.device))
+    else:
+        # 如果已收敛，直接返回输入权重和零损失
+        w_hfl_random, loss_hfl_random = copy.deepcopy(w_input_hfl_random), 0.0
     
-    # --- 训练HFL模型 (使用聚类B矩阵) ---
-    local_cluster = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
-    local_net_hfl_cluster.load_state_dict(w_input_hfl_cluster)
-    w_hfl_cluster, loss_hfl_cluster = local_cluster.train(net=local_net_hfl_cluster.to(args.device))
+    # --- 训练HFL模型 (使用聚类B矩阵) - 仅在未收敛时训练 ---
+    if train_hfl_cluster:
+        local_cluster = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
+        local_net_hfl_cluster.load_state_dict(w_input_hfl_cluster)
+        w_hfl_cluster, loss_hfl_cluster = local_cluster.train(net=local_net_hfl_cluster.to(args.device))
+    else:
+        # 如果已收敛，直接返回输入权重和零损失
+        w_hfl_cluster, loss_hfl_cluster = copy.deepcopy(w_input_hfl_cluster), 0.0
     
-    # --- 训练单层模型 (SFL) ---
-    local_sfl = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
-    local_net_sfl.load_state_dict(w_sfl_global)
-    w_sfl, loss_sfl = local_sfl.train(net=local_net_sfl.to(args.device))
+    # --- 训练单层模型 (SFL) - 仅在未收敛时训练 ---
+    if train_sfl:
+        local_sfl = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[user_idx], user_classes=user_classes)
+        local_net_sfl.load_state_dict(w_sfl_global)
+        w_sfl, loss_sfl = local_sfl.train(net=local_net_sfl.to(args.device))
+    else:
+        # 如果已收敛，直接返回输入权重和零损失
+        w_sfl, loss_sfl = copy.deepcopy(w_sfl_global), 0.0
 
     # 返回结果，包括 user_idx 以便后续排序
     return (user_idx, 
@@ -335,13 +354,16 @@ if __name__ == '__main__':
     t_es_to_eh_design = calculate_transmission_time(model_size, r_es, B_cluster_comm)
     t_eh_to_cloud_random = calculate_transmission_time(model_size, r_es_to_cloud, C_random_comm)
     t_eh_to_cloud_design = calculate_transmission_time(model_size, r_es_to_cloud, C_cluster_comm)
-    t_sfl = calculate_transmission_time(model_size, r_client_to_cloud, np.ones((num_users, 1), dtype=int))
+    t_client_to_cloud_sfl = calculate_transmission_time(model_size, r_client_to_cloud, np.ones((num_users, 1), dtype=int))
+    print(f"random:{t_client_to_es_random}, {t_es_to_eh_random}, {t_eh_to_cloud_random}")
+    print(f"design:{t_client_to_es_design}, {t_es_to_eh_design}, {t_eh_to_cloud_design}")
+    print(f"sfl:{t_client_to_cloud_sfl}")
     t_hfl_random = t_client_to_es_random*k2 + t_es_to_eh_random*k3 + t_eh_to_cloud_random
     t_hfl_design = t_client_to_es_design*k2 + t_es_to_eh_design*k3 + t_eh_to_cloud_design
-    t_sfl = t_sfl * k2 * k3  # SFL 直接通信到云端，乘以 k2*k3 次
-    print(f"hfl_random 单轮通信时间: {t_hfl_random:.6f}s")
-    print(f"hfl_design 单轮通信时间: {t_hfl_design:.6f}s")
-    print(f"sfl 单轮通信时间: {t_sfl:.6f}s")
+    t_sfl = t_client_to_cloud_sfl * k2 * k3  # SFL 直接通信到云端，乘以 k2*k3 次
+    print(f"hfl_random 预计单轮通信时间: {t_hfl_random:.6f}s")
+    print(f"hfl_design 预计单轮通信时间: {t_hfl_design:.6f}s")
+    print(f"sfl 预计单轮通信时间: {t_sfl:.6f}s")
     # 生成EH专属测试集
     print("\n--- 生成EH专属测试集 ---")
     print("采用改进的资源分配策略：允许测试样本在多个EH测试集中重复出现")
@@ -456,8 +478,33 @@ if __name__ == '__main__':
     acc_test_hfl_cluster = []
     acc_test_sfl = []
 
-    # 添加提前停止标志
-    early_stop = False
+    # 记录实际运行的epoch数
+    final_epoch = args.epochs
+
+    # --- 初始化收敛检查器 ---
+    print("\n=== 初始化收敛检查器 ===")
+    # 为每个EH创建收敛检查器 - HFL随机B矩阵
+    eh_checkers_random = {}
+    for eh_idx in range(num_EHs):
+        eh_checkers_random[eh_idx] = ConvergenceChecker()
+    
+    # 为每个EH创建收敛检查器 - HFL聚类B矩阵  
+    eh_checkers_cluster = {}
+    for eh_idx in range(num_EHs):
+        eh_checkers_cluster[eh_idx] = ConvergenceChecker()
+    
+    # 为SFL创建收敛检查器
+    sfl_checker = ConvergenceChecker()
+    
+    # 记录各机制的收敛状态
+    converged_hfl_random = False
+    converged_hfl_cluster = False
+    converged_sfl = False
+    
+    print(f"已为HFL随机B矩阵创建 {len(eh_checkers_random)} 个EH收敛检查器")
+    print(f"已为HFL聚类B矩阵创建 {len(eh_checkers_cluster)} 个EH收敛检查器")
+    print(f"已为SFL创建全局收敛检查器")
+    print("=" * 30)
 
     for epoch in range(args.epochs):
         # HFL 随机B矩阵模型权重分发 (Cloud -> EH)
@@ -503,24 +550,47 @@ if __name__ == '__main__':
                 loss_locals_hfl_cluster = []
                 loss_locals_sfl = []
 
-                print(
-                    f"\n[Parallel Training] Starting training for {args.num_users} clients using {num_processes} processes...")
+                # 显示训练状态信息
+                active_models = []
+                if not converged_hfl_random:
+                    active_models.append("HFL_Random")
+                if not converged_hfl_cluster:
+                    active_models.append("HFL_Cluster")
+                if not converged_sfl:
+                    active_models.append("SFL")
+                
+                if not active_models:
+                    print(f"\n[Skip Training] 所有模型已收敛，跳过客户端训练")
+                    # 如果所有模型都收敛了，跳过训练但仍需要返回结果
+                    results = []
+                    for user_idx in range(num_users):
+                        results.append((user_idx, 
+                                      w_locals_input_hfl_random[user_idx], 0.0,
+                                      w_locals_input_hfl_cluster[user_idx], 0.0,
+                                      w_glob_sfl, 0.0))
+                else:
+                    print(f"\n[Parallel Training] 为 {len(active_models)} 种活跃模型训练 {args.num_users} 个客户端")
+                    print(f"活跃模型: {', '.join(active_models)}")
+                    print(f"使用 {num_processes} 个进程并行训练...")
 
-                # 准备传递给每个子进程的参数
-                tasks = []
-                for user_idx in range(num_users):
-                    task_args = (
-                        args, user_idx, dataset_train, dict_users,
-                        w_locals_input_hfl_random[user_idx], w_locals_input_hfl_cluster[user_idx], 
-                        w_glob_sfl, client_classes
-                    )
-                    tasks.append(task_args)
-                print("成功创建多线程！")
+                    # 准备传递给每个子进程的参数
+                    tasks = []
+                    for user_idx in range(num_users):
+                        task_args = (
+                            args, user_idx, dataset_train, dict_users,
+                            w_locals_input_hfl_random[user_idx], w_locals_input_hfl_cluster[user_idx], 
+                            w_glob_sfl, client_classes,
+                            not converged_hfl_random,  # train_hfl_random
+                            not converged_hfl_cluster,  # train_hfl_cluster  
+                            not converged_sfl  # train_sfl
+                        )
+                        tasks.append(task_args)
+                    print("成功创建多线程！")
 
-                # 创建进程池并分发任务
-                # 使用 with 语句可以自动管理进程池的关闭
-                with mp.Pool(processes=num_processes) as pool:
-                    results = pool.starmap(train_client, tqdm(tasks, desc=f"Epoch {epoch}|{t3 + 1}|{t2 + 1} Training Clients"))
+                    # 创建进程池并分发任务
+                    # 使用 with 语句可以自动管理进程池的关闭
+                    with mp.Pool(processes=num_processes) as pool:
+                        results = pool.starmap(train_client, tqdm(tasks, desc=f"Epoch {epoch}|{t3 + 1}|{t2 + 1} Training Clients"))
 
                 print("训练结束")
                 # 收集并整理所有客户端的训练结果
@@ -534,32 +604,82 @@ if __name__ == '__main__':
                     loss_locals_sfl.append(l_s)
                 
                 print("排序结束")
-                print(f"[Parallel Training] All {args.num_users} clients have finished training.")
+                if active_models:
+                    print(f"[Parallel Training] 所有 {args.num_users} 个客户端已完成 {len(active_models)} 种模型的训练")
+                    print(f"训练的模型: {', '.join(active_models)}")
+                else:
+                    print(f"[Skip Training] 所有模型已收敛，未进行实际训练")
                 print(f'\nEpoch {epoch} | EH_R {t3 + 1}/{k3} | ES_R {t2 + 1}/{k2} | 开始聚合')
 
-                # --- HFL 聚合 (Client -> ES) ---
-                ESs_ws_input_hfl_random = FedAvg_layered(w_locals_output_hfl_random, C1_random)
-                ESs_ws_input_hfl_cluster = FedAvg_layered(w_locals_output_hfl_cluster, C1_cluster)
+                # --- HFL 聚合 (Client -> ES) - 只对未收敛的机制进行聚合 ---
+                if not converged_hfl_random:
+                    ESs_ws_input_hfl_random = FedAvg_layered(w_locals_output_hfl_random, C1_random)
+                else:
+                    print(f"  [Skip] HFL随机B矩阵已收敛，跳过ES层聚合")
+                
+                if not converged_hfl_cluster:
+                    ESs_ws_input_hfl_cluster = FedAvg_layered(w_locals_output_hfl_cluster, C1_cluster)
+                else:
+                    print(f"  [Skip] HFL聚类B矩阵已收敛，跳过ES层聚合")
 
                 # --- SFL 全局聚合 (Client -> Cloud) ---
-                w_glob_sfl = FedAvg(w_locals_output_sfl)
-                net_glob_sfl.load_state_dict(w_glob_sfl)
+                if not converged_sfl:
+                    w_glob_sfl = FedAvg(w_locals_output_sfl)
+                    net_glob_sfl.load_state_dict(w_glob_sfl)
+                else:
+                    print(f"  [Skip] SFL已收敛，跳过全局聚合")
 
                 # --- 记录损失 ---
-                loss_avg_hfl_random = sum(loss_locals_hfl_random) / len(loss_locals_hfl_random)
-                loss_avg_hfl_cluster = sum(loss_locals_hfl_cluster) / len(loss_locals_hfl_cluster)
-                loss_avg_sfl = sum(loss_locals_sfl) / len(loss_locals_sfl)
+                # 只为实际训练的模型计算平均损失，已收敛的模型损失为0
+                if not converged_hfl_random:
+                    loss_avg_hfl_random = sum(loss_locals_hfl_random) / len(loss_locals_hfl_random) if loss_locals_hfl_random else 0.0
+                else:
+                    loss_avg_hfl_random = 0.0  # 已收敛，损失为0
+                    
+                if not converged_hfl_cluster:
+                    loss_avg_hfl_cluster = sum(loss_locals_hfl_cluster) / len(loss_locals_hfl_cluster) if loss_locals_hfl_cluster else 0.0
+                else:
+                    loss_avg_hfl_cluster = 0.0  # 已收敛，损失为0
+                    
+                if not converged_sfl:
+                    loss_avg_sfl = sum(loss_locals_sfl) / len(loss_locals_sfl) if loss_locals_sfl else 0.0
+                else:
+                    loss_avg_sfl = 0.0  # 已收敛，损失为0
                 
                 loss_train_hfl_random.append(loss_avg_hfl_random)
                 loss_train_hfl_cluster.append(loss_avg_hfl_cluster)
                 loss_train_sfl.append(loss_avg_sfl)
 
+                # 显示损失信息，区分训练和收敛状态
                 print(f'\nEpoch {epoch} | EH_R {t3 + 1}/{k3} | ES_R {t2 + 1}/{k2}')
-                print(f'HFL_Random Loss: {loss_avg_hfl_random:.4f} | HFL_Cluster Loss: {loss_avg_hfl_cluster:.4f} | SFL Loss: {loss_avg_sfl:.4f}')
+                loss_info = []
+                if not converged_hfl_random:
+                    loss_info.append(f'HFL_Random Loss: {loss_avg_hfl_random:.4f}')
+                else:
+                    loss_info.append(f'HFL_Random: 已收敛 ✅')
+                    
+                if not converged_hfl_cluster:
+                    loss_info.append(f'HFL_Cluster Loss: {loss_avg_hfl_cluster:.4f}')
+                else:
+                    loss_info.append(f'HFL_Cluster: 已收敛 ✅')
+                    
+                if not converged_sfl:
+                    loss_info.append(f'SFL Loss: {loss_avg_sfl:.4f}')
+                else:
+                    loss_info.append(f'SFL: 已收敛 ✅')
+                    
+                print(' | '.join(loss_info))
 
-            # HFL 聚合 (ES -> EH)
-            EHs_ws_hfl_random = FedAvg_layered(ESs_ws_input_hfl_random, C2_random)
-            EHs_ws_hfl_cluster = FedAvg_layered(ESs_ws_input_hfl_cluster, C2_cluster)
+            # HFL 聚合 (ES -> EH) - 只对未收敛的机制进行聚合
+            if not converged_hfl_random:
+                EHs_ws_hfl_random = FedAvg_layered(ESs_ws_input_hfl_random, C2_random)
+            else:
+                print(f"  [Skip] HFL随机B矩阵已收敛，跳过EH层聚合")
+            
+            if not converged_hfl_cluster:
+                EHs_ws_hfl_cluster = FedAvg_layered(ESs_ws_input_hfl_cluster, C2_cluster)
+            else:
+                print(f"  [Skip] HFL聚类B矩阵已收敛，跳过EH层聚合")
             
             # --- 在每次EH聚合后测试EH模型在专属测试集上的性能 ---
             print(f"\n[EH Testing] Epoch {epoch} | EH_Round {t3+1}/{k3} - 测试EH模型性能...")
@@ -568,61 +688,72 @@ if __name__ == '__main__':
             eh_results_random = []
             eh_results_cluster = []
             
-            # 测试每个EH的模型性能（在随机B矩阵情况下）
-            for eh_idx, eh_weights in enumerate(EHs_ws_hfl_random):
-                if eh_weights is not None and eh_idx in eh_testsets_random:
-                    # 创建临时模型并加载权重
-                    temp_model = build_model(args, dataset_train)
-                    temp_model.load_state_dict(eh_weights)
-                    temp_model.eval()
-                    
-                    # 在EH专属测试集上测试模型
-                    eh_acc, eh_loss = test_eh_model(temp_model, dataset_test, eh_testsets_random[eh_idx], args)
-                    
-                    # 记录结果
-                    eh_results_random.append({
-                        'epoch': epoch,
-                        'eh_round': t3 + 1,
-                        'es_round': k2,  # ES轮次已结束
-                        'train_loss': 0.0,  # EH级别没有训练损失
-                        'test_loss': eh_loss,
-                        'test_acc': eh_acc,
-                        'model_type': 'HFL_Random_B',
-                        'level': 'EH',
-                        'eh_idx': eh_idx
-                    })
-                    
-                    print(f"  [Random] EH {eh_idx}: Acc {eh_acc:.2f}%, Loss {eh_loss:.4f}")
+            # 测试每个EH的模型性能（在随机B矩阵情况下）- 只测试未收敛的机制
+            if not converged_hfl_random:
+                for eh_idx, eh_weights in enumerate(EHs_ws_hfl_random):
+                    if eh_weights is not None and eh_idx in eh_testsets_random:
+                        # 创建临时模型并加载权重
+                        temp_model = build_model(args, dataset_train)
+                        temp_model.load_state_dict(eh_weights)
+                        temp_model.eval()
+                        
+                        # 在EH专属测试集上测试模型
+                        eh_acc, eh_loss = test_eh_model(temp_model, dataset_test, eh_testsets_random[eh_idx], args)
+                        
+                        # 记录结果
+                        eh_results_random.append({
+                            'epoch': epoch,
+                            'eh_round': t3 + 1,
+                            'es_round': k2,  # ES轮次已结束
+                            'train_loss': 0.0,  # EH级别没有训练损失
+                            'test_loss': eh_loss,
+                            'test_acc': eh_acc,
+                            'model_type': 'HFL_Random_B',
+                            'level': 'EH',
+                            'eh_idx': eh_idx
+                        })
+                        
+                        print(f"  [Random] EH {eh_idx}: Acc {eh_acc:.2f}%, Loss {eh_loss:.4f}")
+            else:
+                print("  [Skip] HFL随机B矩阵已收敛，跳过EH模型测试")
             
-            # 测试每个EH的模型性能（在聚类B矩阵情况下）
-            for eh_idx, eh_weights in enumerate(EHs_ws_hfl_cluster):
-                if eh_weights is not None and eh_idx in eh_testsets_cluster:
-                    # 创建临时模型并加载权重
-                    temp_model = build_model(args, dataset_train)
-                    temp_model.load_state_dict(eh_weights)
-                    temp_model.eval()
-                    
-                    # 在EH专属测试集上测试模型
-                    eh_acc, eh_loss = test_eh_model(temp_model, dataset_test, eh_testsets_cluster[eh_idx], args)
-                    
-                    # 记录结果
-                    eh_results_cluster.append({
-                        'epoch': epoch,
-                        'eh_round': t3 + 1,
-                        'es_round': k2,  # ES轮次已结束
-                        'train_loss': 0.0,  # EH级别没有训练损失
-                        'test_loss': eh_loss,
-                        'test_acc': eh_acc,
-                        'model_type': 'HFL_Cluster_B',
-                        'level': 'EH',
-                        'eh_idx': eh_idx
-                    })
-                    
-                    print(f"  [Cluster] EH {eh_idx}: Acc {eh_acc:.2f}%, Loss {eh_loss:.4f}")
+            # 测试每个EH的模型性能（在聚类B矩阵情况下）- 只测试未收敛的机制
+            if not converged_hfl_cluster:
+                for eh_idx, eh_weights in enumerate(EHs_ws_hfl_cluster):
+                    if eh_weights is not None and eh_idx in eh_testsets_cluster:
+                        # 创建临时模型并加载权重
+                        temp_model = build_model(args, dataset_train)
+                        temp_model.load_state_dict(eh_weights)
+                        temp_model.eval()
+                        
+                        # 在EH专属测试集上测试模型
+                        eh_acc, eh_loss = test_eh_model(temp_model, dataset_test, eh_testsets_cluster[eh_idx], args)
+                        
+                        # 记录结果
+                        eh_results_cluster.append({
+                            'epoch': epoch,
+                            'eh_round': t3 + 1,
+                            'es_round': k2,  # ES轮次已结束
+                            'train_loss': 0.0,  # EH级别没有训练损失
+                            'test_loss': eh_loss,
+                            'test_acc': eh_acc,
+                            'model_type': 'HFL_Cluster_B',
+                            'level': 'EH',
+                            'eh_idx': eh_idx
+                        })
+                        
+                        print(f"  [Cluster] EH {eh_idx}: Acc {eh_acc:.2f}%, Loss {eh_loss:.4f}")
+            else:
+                print("  [Skip] HFL聚类B矩阵已收敛，跳过EH模型测试")
             
-            # 测试SFL全局模型（在全局测试集上）
-            net_glob_sfl.eval()
-            acc_sfl, loss_sfl = test_img(net_glob_sfl, dataset_test, args)
+            # 测试SFL全局模型（在全局测试集上）- 只测试未收敛的机制
+            if not converged_sfl:
+                net_glob_sfl.eval()
+                acc_sfl, loss_sfl = test_img(net_glob_sfl, dataset_test, args)
+            else:
+                print("  [Skip] SFL已收敛，跳过全局模型测试")
+                # 使用上一轮的结果作为占位符
+                acc_sfl, loss_sfl = acc_test_sfl[-1] if acc_test_sfl else 0.0, loss_test_sfl[-1] if loss_test_sfl else 0.0
             
             # 记录SFL模型结果
             sfl_result = {
@@ -639,6 +770,73 @@ if __name__ == '__main__':
             
             print(f"  [SFL Global]: Acc {acc_sfl:.2f}%, Loss {loss_sfl:.4f}")
             
+            # --- 收敛性检查 ---
+            print(f"\n[Convergence Check] Epoch {epoch} | EH_Round {t3+1}/{k3}")
+            
+            # 检查HFL随机B矩阵的收敛性
+            if not converged_hfl_random:
+                hfl_random_converged_count = 0
+                for eh_idx, eh_weights in enumerate(EHs_ws_hfl_random):
+                    if eh_weights is not None and eh_idx in eh_testsets_random:
+                        # 找到对应的测试结果
+                        eh_loss = None
+                        eh_acc = None
+                        for result in eh_results_random:
+                            if result['eh_idx'] == eh_idx:
+                                eh_loss = result['test_loss']
+                                eh_acc = result['test_acc']
+                                break
+                        
+                        if eh_loss is not None and eh_acc is not None:
+                            should_stop, reason = eh_checkers_random[eh_idx].check(eh_loss, eh_acc, epoch)
+                            print(f"  [Random] EH {eh_idx}: {reason}")
+                            if should_stop:
+                                hfl_random_converged_count += 1
+                
+                # 如果所有EH都收敛，则整个HFL随机B矩阵机制收敛
+                active_ehs_random = len([eh for eh in EHs_ws_hfl_random if eh is not None])
+                if hfl_random_converged_count == active_ehs_random and active_ehs_random > 0:
+                    converged_hfl_random = True
+                    print(f"  🎯 [Random] HFL随机B矩阵机制已收敛！所有 {active_ehs_random} 个EH都满足收敛条件")
+                else:
+                    print(f"  [Random] 收敛进度: {hfl_random_converged_count}/{active_ehs_random} EH已收敛")
+            
+            # 检查HFL聚类B矩阵的收敛性
+            if not converged_hfl_cluster:
+                hfl_cluster_converged_count = 0
+                for eh_idx, eh_weights in enumerate(EHs_ws_hfl_cluster):
+                    if eh_weights is not None and eh_idx in eh_testsets_cluster:
+                        # 找到对应的测试结果
+                        eh_loss = None
+                        eh_acc = None
+                        for result in eh_results_cluster:
+                            if result['eh_idx'] == eh_idx:
+                                eh_loss = result['test_loss']
+                                eh_acc = result['test_acc']
+                                break
+                        
+                        if eh_loss is not None and eh_acc is not None:
+                            should_stop, reason = eh_checkers_cluster[eh_idx].check(eh_loss, eh_acc, epoch)
+                            print(f"  [Cluster] EH {eh_idx}: {reason}")
+                            if should_stop:
+                                hfl_cluster_converged_count += 1
+                
+                # 如果所有EH都收敛，则整个HFL聚类B矩阵机制收敛
+                active_ehs_cluster = len([eh for eh in EHs_ws_hfl_cluster if eh is not None])
+                if hfl_cluster_converged_count == active_ehs_cluster and active_ehs_cluster > 0:
+                    converged_hfl_cluster = True
+                    print(f"  🎯 [Cluster] HFL聚类B矩阵机制已收敛！所有 {active_ehs_cluster} 个EH都满足收敛条件")
+                else:
+                    print(f"  [Cluster] 收敛进度: {hfl_cluster_converged_count}/{active_ehs_cluster} EH已收敛")
+            
+            # 检查SFL的收敛性
+            if not converged_sfl:
+                should_stop, reason = sfl_checker.check(loss_sfl, acc_sfl, epoch)
+                print(f"  [SFL] {reason}")
+                if should_stop:
+                    converged_sfl = True
+                    print(f"  🎯 [SFL] SFL机制已收敛！")
+            
             # 将EH测试结果添加到结果历史中
             results_history.extend(eh_results_random)
             results_history.extend(eh_results_cluster)
@@ -647,32 +845,63 @@ if __name__ == '__main__':
             # 每次EH测试后更新CSV文件
             save_results_to_csv(results_history, csv_filename)
 
-        # HFL 全局聚合 (EH -> Cloud)
-        w_glob_hfl_random = FedAvg(EHs_ws_hfl_random)
-        net_glob_hfl_random.load_state_dict(w_glob_hfl_random)
+        # HFL 全局聚合 (EH -> Cloud) - 只对未收敛的机制进行聚合
+        if not converged_hfl_random:
+            w_glob_hfl_random = FedAvg(EHs_ws_hfl_random)
+            net_glob_hfl_random.load_state_dict(w_glob_hfl_random)
+        else:
+            print(f"  [Skip] HFL随机B矩阵已收敛，跳过全局聚合")
         
-        w_glob_hfl_cluster = FedAvg(EHs_ws_hfl_cluster)
-        net_glob_hfl_cluster.load_state_dict(w_glob_hfl_cluster)
+        if not converged_hfl_cluster:
+            w_glob_hfl_cluster = FedAvg(EHs_ws_hfl_cluster)
+            net_glob_hfl_cluster.load_state_dict(w_glob_hfl_cluster)
+        else:
+            print(f"  [Skip] HFL聚类B矩阵已收敛，跳过全局聚合")
 
-        # --- 在每个 EPOCH 结束时进行测试 ---
-        net_glob_hfl_random.eval()
-        net_glob_hfl_cluster.eval()
-        net_glob_sfl.eval()
-
+        # --- 在每个 EPOCH 结束时进行测试 - 只测试未收敛的机制 ---
+        print(f"\n[End of Epoch {epoch}] 测试全局模型性能...")
+        
         # 评估 HFL 随机B模型
-        acc_hfl_random, loss_hfl_random = test_img(net_glob_hfl_random, dataset_test, args)
-        acc_test_hfl_random.append(acc_hfl_random)
-        loss_test_hfl_random.append(loss_hfl_random)
+        if not converged_hfl_random:
+            net_glob_hfl_random.eval()
+            acc_hfl_random, loss_hfl_random = test_img(net_glob_hfl_random, dataset_test, args)
+            acc_test_hfl_random.append(acc_hfl_random)
+            loss_test_hfl_random.append(loss_hfl_random)
+        else:
+            # 使用上一轮结果作为占位符
+            acc_hfl_random = acc_test_hfl_random[-1] if acc_test_hfl_random else 0.0
+            loss_hfl_random = loss_test_hfl_random[-1] if loss_test_hfl_random else 0.0
+            acc_test_hfl_random.append(acc_hfl_random)
+            loss_test_hfl_random.append(loss_hfl_random)
+            print(f"  [Skip] HFL随机B矩阵已收敛，使用上一轮结果")
 
         # 评估 HFL 聚类B模型
-        acc_hfl_cluster, loss_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_test, args)
-        acc_test_hfl_cluster.append(acc_hfl_cluster)
-        loss_test_hfl_cluster.append(loss_hfl_cluster)
+        if not converged_hfl_cluster:
+            net_glob_hfl_cluster.eval()
+            acc_hfl_cluster, loss_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_test, args)
+            acc_test_hfl_cluster.append(acc_hfl_cluster)
+            loss_test_hfl_cluster.append(loss_hfl_cluster)
+        else:
+            # 使用上一轮结果作为占位符
+            acc_hfl_cluster = acc_test_hfl_cluster[-1] if acc_test_hfl_cluster else 0.0
+            loss_hfl_cluster = loss_test_hfl_cluster[-1] if loss_test_hfl_cluster else 0.0
+            acc_test_hfl_cluster.append(acc_hfl_cluster)
+            loss_test_hfl_cluster.append(loss_hfl_cluster)
+            print(f"  [Skip] HFL聚类B矩阵已收敛，使用上一轮结果")
 
         # 评估 SFL 模型
-        acc_sfl, loss_sfl = test_img(net_glob_sfl, dataset_test, args)
-        acc_test_sfl.append(acc_sfl)
-        loss_test_sfl.append(loss_sfl)
+        if not converged_sfl:
+            net_glob_sfl.eval()
+            acc_sfl, loss_sfl = test_img(net_glob_sfl, dataset_test, args)
+            acc_test_sfl.append(acc_sfl)
+            loss_test_sfl.append(loss_sfl)
+        else:
+            # 使用上一轮结果作为占位符
+            acc_sfl = acc_test_sfl[-1] if acc_test_sfl else 0.0
+            loss_sfl = loss_test_sfl[-1] if loss_test_sfl else 0.0
+            acc_test_sfl.append(acc_sfl)
+            loss_test_sfl.append(loss_sfl)
+            print(f"  [Skip] SFL已收敛，使用上一轮结果")
 
         # 记录当前epoch的结果 - 新格式
         current_epoch_results = [
@@ -722,6 +951,17 @@ if __name__ == '__main__':
         print(f'HFL_Cluster: Acc {acc_hfl_cluster:.2f}%, Loss {loss_hfl_cluster:.4f}')
         print(f'SFL: Acc {acc_sfl:.2f}%, Loss {loss_sfl:.4f}')
 
+        # --- 检查是否所有机制都已收敛 ---
+        if converged_hfl_random and converged_hfl_cluster and converged_sfl:
+            print(f"\n🎉 所有联邦学习机制都已收敛！提前结束训练。")
+            print(f"实际训练轮次: {epoch + 1}/{args.epochs}")
+            final_epoch = epoch + 1
+            break
+        else:
+            print(f"\n📊 收敛状态: HFL_Random={'✅' if converged_hfl_random else '❌'}, "
+                  f"HFL_Cluster={'✅' if converged_hfl_cluster else '❌'}, "
+                  f"SFL={'✅' if converged_sfl else '❌'}")
+
         net_glob_hfl_random.train()  # 切换回训练模式
         net_glob_hfl_cluster.train()  # 切换回训练模式
         net_glob_sfl.train()  # 切换回训练模式
@@ -730,27 +970,35 @@ if __name__ == '__main__':
     # Final Testing - 测试三种模型的最终性能
     # =====================================================================================
     print("\n--- Final Model Evaluation ---")
+    print(f"最终收敛状态:")
+    print(f"  HFL_Random: {'已收敛 ✅' if converged_hfl_random else '未收敛 ❌'}")
+    print(f"  HFL_Cluster: {'已收敛 ✅' if converged_hfl_cluster else '未收敛 ❌'}")
+    print(f"  SFL: {'已收敛 ✅' if converged_sfl else '未收敛 ❌'}")
+    print(f"实际训练轮次: {final_epoch}/{args.epochs}")
     
     # 测试 HFL 随机B矩阵模型
     net_glob_hfl_random.eval()
     acc_train_hfl_random, loss_train_final_hfl_random = test_img(net_glob_hfl_random, dataset_train, args)
     acc_test_final_hfl_random, loss_test_final_hfl_random = test_img(net_glob_hfl_random, dataset_test, args)
-    print(f"HFL Model (Random B Matrix) - Training accuracy: {acc_train_hfl_random:.2f}%, Testing accuracy: {acc_test_final_hfl_random:.2f}%")
+    converged_str = "已收敛" if converged_hfl_random else "未收敛"
+    print(f"HFL Model (Random B Matrix) [{converged_str}] - Training accuracy: {acc_train_hfl_random:.2f}%, Testing accuracy: {acc_test_final_hfl_random:.2f}%")
     
     # 测试 HFL 聚类B矩阵模型
     net_glob_hfl_cluster.eval()
     acc_train_hfl_cluster, loss_train_final_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_train, args)
     acc_test_final_hfl_cluster, loss_test_final_hfl_cluster = test_img(net_glob_hfl_cluster, dataset_test, args)
-    print(f"HFL Model (Clustered B Matrix) - Training accuracy: {acc_train_hfl_cluster:.2f}%, Testing accuracy: {acc_test_final_hfl_cluster:.2f}%")
+    converged_str = "已收敛" if converged_hfl_cluster else "未收敛"
+    print(f"HFL Model (Clustered B Matrix) [{converged_str}] - Training accuracy: {acc_train_hfl_cluster:.2f}%, Testing accuracy: {acc_test_final_hfl_cluster:.2f}%")
 
     # 测试 SFL 模型
     net_glob_sfl.eval()
     acc_train_sfl, loss_train_final_sfl = test_img(net_glob_sfl, dataset_train, args)
     acc_test_final_sfl, loss_test_final_sfl = test_img(net_glob_sfl, dataset_test, args)
-    print(f"SFL Model (Single Layer) - Training accuracy: {acc_train_sfl:.2f}%, Testing accuracy: {acc_test_final_sfl:.2f}%")
+    converged_str = "已收敛" if converged_sfl else "未收敛"
+    print(f"SFL Model (Single Layer) [{converged_str}] - Training accuracy: {acc_train_sfl:.2f}%, Testing accuracy: {acc_test_final_sfl:.2f}%")
 
     # 保存最终结果（添加到结果历史列表中）
-    final_epoch = args.epochs  # 使用一个额外的epoch号来表示最终结果
+    # final_epoch 已在前面定义，此处不需要重复定义
     
     # 添加最终结果到结果历史列表
     final_results = [
@@ -847,12 +1095,26 @@ if __name__ == '__main__':
     print("1. HFL (Random B Matrix) - 使用随机生成的ES-EH关联矩阵")
     print("2. HFL (Clustered B Matrix) - 使用谱聚类生成的ES-EH关联矩阵") 
     print("3. SFL (Single Layer) - 传统单层联邦学习")
-    print(f"训练参数: epochs={args.epochs}, clients={args.num_users}, local_epochs={args.local_ep}")
+    print(f"训练参数: 设定epochs={args.epochs}, 实际epochs={final_epoch}, clients={args.num_users}, local_epochs={args.local_ep}")
     print(f"层级参数: k2={args.ES_k2} (ES层聚合轮数), k3={args.EH_k3} (EH层聚合轮数)")
     print(f"并行参数: num_processes={args.num_processes}")
     print(f"数据集: {args.dataset}, 模型: {args.model}, IID: {args.iid}")
     if not args.iid:
         print(f"非IID参数: beta={args.beta}")
+    
+    print(f"\n=== 收敛性分析 ===")
+    print(f"收敛检查器参数: patience=5, min_delta=0.001")
+    print(f"最终收敛状态:")
+    print(f"  • HFL_Random: {'✅ 已收敛' if converged_hfl_random else '❌ 未收敛'}")
+    print(f"  • HFL_Cluster: {'✅ 已收敛' if converged_hfl_cluster else '❌ 未收敛'}")  
+    print(f"  • SFL: {'✅ 已收敛' if converged_sfl else '❌ 未收敛'}")
+    
+    if converged_hfl_random and converged_hfl_cluster and converged_sfl:
+        print(f"🎉 所有机制均收敛，训练在第{final_epoch}轮提前结束")
+    elif final_epoch < args.epochs:
+        print(f"⚠️ 部分机制收敛，训练在第{final_epoch}轮提前结束")
+    else:
+        print(f"⏰ 训练完成设定的{args.epochs}轮，部分机制可能未完全收敛")
     
     # 显示最终性能对比
     try:
