@@ -137,18 +137,22 @@ def calculate_comm_overhead_hfl_bipartite(C1, C2, cluster_heads, num_users, num_
     return total_upload_overhead + comm_utils
 
 
-def calculate_transmission_time(model_size, rate_matrix, association_matrix):
+def calculate_transmission_time(model_size, rate_matrix, association_matrix, sender_power=None):
     """
-    计算传输时间，返回所有关联设备之间传输时间的最大值
+    计算传输时间和通信开销，返回所有关联设备之间传输时间的最大值和通信开销
     
     Args:
         model_size (float): 模型大小（比特）
         rate_matrix (np.ndarray): 速率矩阵，形状为 (发送设备数, 接收设备数)，单位为 bits/s
         association_matrix (np.ndarray): 关联矩阵，形状与速率矩阵相同 (发送设备数, 接收设备数)
                                        矩阵中的1表示存在关联，0表示无关联
+        sender_power (float, optional): 所有发送设备的发送功率（数值型），单位为W
+                                      如果为None，则不计算通信开销
     
     Returns:
-        float: 最大传输时间（秒）
+        tuple: (max_transmission_time, communication_overhead)
+            - max_transmission_time (float): 最大传输时间（秒）
+            - communication_overhead (float): 通信开销（W·s），如果sender_power为None则返回0
     
     Example:
         # 假设有3个发送设备和2个接收设备
@@ -159,7 +163,8 @@ def calculate_transmission_time(model_size, rate_matrix, association_matrix):
         association_matrix = np.array([[1, 0],    # 发送设备0关联到接收设备0
                                       [1, 0],    # 发送设备1关联到接收设备0  
                                       [0, 1]])   # 发送设备2关联到接收设备1
-        max_time = calculate_transmission_time(model_size, rate_matrix, association_matrix)
+        sender_power = 1.5  # 所有发送设备使用相同功率1.5W
+        max_time, comm_overhead = calculate_transmission_time(model_size, rate_matrix, association_matrix, sender_power)
     """
     if association_matrix is None or association_matrix.size == 0:
         print("警告: 关联矩阵为空，返回传输时间为0")
@@ -175,6 +180,18 @@ def calculate_transmission_time(model_size, rate_matrix, association_matrix):
         return 0.0
     
     transmission_times = []
+    communication_overhead = 0.0
+    
+    # 检查发送功率参数（现在是数值型）
+    if sender_power is not None:
+        try:
+            sender_power = float(sender_power)
+            if sender_power <= 0:
+                print(f"警告: 发送功率 {sender_power} 应为正数，设置为None")
+                sender_power = None
+        except (TypeError, ValueError):
+            print(f"警告: 发送功率参数类型错误，应为数值型，设置为None")
+            sender_power = None
     
     # 遍历关联矩阵中的每个位置
     for sender_device in range(association_matrix.shape[0]):
@@ -189,22 +206,36 @@ def calculate_transmission_time(model_size, rate_matrix, association_matrix):
                     transmission_time = model_size / transmission_rate
                     transmission_times.append(transmission_time)
                     
-                    # 调试信息（可选，在实际使用时可以注释掉）
-                    # print(f"发送设备 {sender_device} -> 目标设备 {target_device}: "
-                    #       f"速率 {transmission_rate:.2e} bits/s, "
-                    #       f"传输时间 {transmission_time:.4f} 秒")
+                    # 计算通信开销 = 传输时间 * 发送功率（所有设备使用相同功率）
+                    if sender_power is not None:
+                        overhead = transmission_time * sender_power
+                        communication_overhead += overhead
+                        
+                        # 调试信息（可选，在实际使用时可以注释掉）
+                        # print(f"发送设备 {sender_device} -> 目标设备 {target_device}: "
+                        #       f"速率 {transmission_rate:.2e} bits/s, "
+                        #       f"传输时间 {transmission_time:.4f} 秒, "
+                        #       f"功率 {sender_power:.2f} W, 开销 {overhead:.4f} W·s")
+                    else:
+                        # 调试信息（可选，在实际使用时可以注释掉）
+                        # print(f"发送设备 {sender_device} -> 目标设备 {target_device}: "
+                        #       f"速率 {transmission_rate:.2e} bits/s, "
+                        #       f"传输时间 {transmission_time:.4f} 秒")
+                        pass
                 else:
                     print(f"警告: 发送设备 {sender_device} 到目标设备 {target_device} 的传输速率为 {transmission_rate}，跳过")
     
-    # 返回最大传输时间
+    # 返回最大传输时间和通信开销
     if transmission_times:
         max_transmission_time = max(transmission_times)
         # print(f"计算得到的传输时间列表: {[f'{t:.4f}' for t in transmission_times]} 秒")
         print(f"最大传输时间: {max_transmission_time:.4f} 秒")
-        return max_transmission_time
+        if sender_power is not None:
+            print(f"总通信开销: {communication_overhead:.4f} W·s")
+        return max_transmission_time, communication_overhead
     else:
         print("警告: 没有有效的传输时间计算，返回0")
-        return 0.0
+        return 0.0, 0.0
 
 
 def get_model_size_in_bits(model):

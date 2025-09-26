@@ -46,6 +46,75 @@ from models.ES_cluster import (
 from utils.conver_check import ConvergenceChecker
 import numpy as np
 
+def save_communication_results_to_csv(network_scale, hfl_cluster_time, hfl_random_time, sfl_time,
+                                    hfl_cluster_power, hfl_random_power, sfl_power, 
+                                    dataset, model):
+    """
+    保存通信时间和能耗结果到CSV文件
+    
+    Args:
+        network_scale (int): 网络规模（用户数量）
+        hfl_cluster_time (float): HFL聚类方法的通信时间
+        hfl_random_time (float): HFL随机方法的通信时间
+        sfl_time (float): SFL方法的通信时间
+        hfl_cluster_power (float): HFL聚类方法的通信能耗
+        hfl_random_power (float): HFL随机方法的通信能耗
+        sfl_power (float): SFL方法的通信能耗
+        dataset (str): 数据集名称
+        model (str): 模型名称
+    """
+    # 生成时间戳
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # 生成文件名：网络规模_数据集_模型_时间戳
+    filename = f"./results/comm_results_scale{network_scale}_{dataset}_{model}_{timestamp}.csv"
+    
+    # 确保结果目录存在
+    if not os.path.exists('./results'):
+        os.makedirs('./results')
+    
+    # 准备数据
+    data = []
+    
+    # 添加时间结果行
+    data.append({
+        'Network Scale': network_scale,
+        'hfl_cluster': hfl_cluster_time,
+        'hfl_random': hfl_random_time,
+        'sfl': sfl_time,
+        'type': 't'
+    })
+    
+    # 添加能耗结果行
+    data.append({
+        'Network Scale': network_scale,
+        'hfl_cluster': hfl_cluster_power,
+        'hfl_random': hfl_random_power,
+        'sfl': sfl_power,
+        'type': 'p'
+    })
+    
+    # 写入CSV文件
+    try:
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['Network Scale', 'hfl_cluster', 'hfl_random', 'sfl', 'type']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            # 写入表头
+            writer.writeheader()
+            
+            # 写入数据
+            writer.writerows(data)
+        
+        print(f"\n✅ 通信结果已保存到: {filename}")
+        print(f"📊 数据格式:")
+        print(f"   网络规模: {network_scale} 用户")
+        print(f"   时间结果 - HFL聚类: {hfl_cluster_time:.6f}s, HFL随机: {hfl_random_time:.6f}s, SFL: {sfl_time:.6f}s")
+        print(f"   能耗结果 - HFL聚类: {hfl_cluster_power:.6f}J, HFL随机: {hfl_random_power:.6f}J, SFL: {sfl_power:.6f}J")
+        
+    except Exception as e:
+        print(f"❌ 保存通信结果时发生错误: {e}")
+
 def build_model(args, dataset_train):
     img_size = dataset_train[0][0].shape
 
@@ -341,6 +410,8 @@ if __name__ == '__main__':
 
     # 构建通信实际的关联矩阵（用于通信开销计算）
     # 两种A关联矩阵直接可用，B关联矩阵为（es，簇）形式，需转化为es-es，还需生成es-cloud
+    p_client = 20.0
+    p_es = 50.0
     model_size = get_model_size_in_bits(w_glob)
     B_random_comm, C_random_comm = select_eh_random(B_random)
     B_cluster_comm, C_cluster_comm = select_eh(B_cluster, r_es, r_es_to_cloud, model_size)
@@ -348,22 +419,44 @@ if __name__ == '__main__':
     print("C2_random (二级->一级):", C2_random)
     print("C1_cluster (一级->客户端):", C1_cluster)
     print("C2_cluster (二级->一级):", C2_cluster)
-    t_client_to_es_random = calculate_transmission_time(model_size, r_client_to_es, A_design)
-    t_client_to_es_design = calculate_transmission_time(model_size, r_client_to_es, A_design)
-    t_es_to_eh_random = calculate_transmission_time(model_size, r_es, B_random_comm)
-    t_es_to_eh_design = calculate_transmission_time(model_size, r_es, B_cluster_comm)
-    t_eh_to_cloud_random = calculate_transmission_time(model_size, r_es_to_cloud, C_random_comm)
-    t_eh_to_cloud_design = calculate_transmission_time(model_size, r_es_to_cloud, C_cluster_comm)
-    t_client_to_cloud_sfl = calculate_transmission_time(model_size, r_client_to_cloud, np.ones((num_users, 1), dtype=int))
+    t_client_to_es_random, p_client_to_es_random = calculate_transmission_time(model_size, r_client_to_es, A_design, p_client)
+    t_client_to_es_design, p_client_to_es_design = calculate_transmission_time(model_size, r_client_to_es, A_design, p_client)
+    t_es_to_eh_random, p_es_to_eh_random = calculate_transmission_time(model_size, r_es, B_random_comm, p_es)
+    t_es_to_eh_design, p_es_to_eh_design = calculate_transmission_time(model_size, r_es, B_cluster_comm, p_es)
+    t_eh_to_cloud_random, p_eh_to_cloud_random = calculate_transmission_time(model_size, r_es_to_cloud, C_random_comm, p_es)
+    t_eh_to_cloud_design, p_eh_to_cloud_design = calculate_transmission_time(model_size, r_es_to_cloud, C_cluster_comm, p_es)
+    t_client_to_cloud_sfl, p_client_to_cloud_sfl = calculate_transmission_time(model_size, r_client_to_cloud, np.ones((num_users, 1), dtype=int), p_client)
     print(f"random:{t_client_to_es_random}, {t_es_to_eh_random}, {t_eh_to_cloud_random}")
     print(f"design:{t_client_to_es_design}, {t_es_to_eh_design}, {t_eh_to_cloud_design}")
     print(f"sfl:{t_client_to_cloud_sfl}")
+    print(f"random:{p_client_to_es_random}, {p_es_to_eh_random}, {p_eh_to_cloud_random}")
+    print(f"design:{p_client_to_es_design}, {p_es_to_eh_design}, {p_eh_to_cloud_design}")
+    print(f"sfl:{p_client_to_cloud_sfl}")
     t_hfl_random_sig = t_client_to_es_random * k2 + t_es_to_eh_random * k3 + t_eh_to_cloud_random
     t_hfl_design_sig = t_client_to_es_design * k2 + t_es_to_eh_design * k3 + t_eh_to_cloud_design
     t_sfl_sig = t_client_to_cloud_sfl * k2 * k3  # SFL 直接通信到云端，乘以 k2*k3 次
+    p_hfl_random_sig = p_client_to_es_random * k2 + p_es_to_eh_random * k3 + p_eh_to_cloud_random
+    p_hfl_design_sig = p_client_to_es_design * k2 + p_es_to_eh_design * k3 + p_eh_to_cloud_design
+    p_sfl_sig = p_client_to_cloud_sfl * k2 * k3
     print(f"hfl_random 预计单轮通信时间: {t_hfl_random_sig:.6f}s")
     print(f"hfl_design 预计单轮通信时间: {t_hfl_design_sig:.6f}s")
     print(f"sfl 预计单轮通信时间: {t_sfl_sig:.6f}s")
+    print(f"hfl_random 预计单轮通信能耗: {p_hfl_random_sig:.6f}J")
+    print(f"hfl_design 预计单轮通信能耗: {p_hfl_design_sig:.6f}J")
+    print(f"sfl 预计单轮通信能耗: {p_sfl_sig:.6f}J")
+    
+    # 保存通信时间和能耗结果到CSV
+    save_communication_results_to_csv(
+        network_scale=num_users,
+        hfl_cluster_time=t_hfl_design_sig,
+        hfl_random_time=t_hfl_random_sig, 
+        sfl_time=t_sfl_sig,
+        hfl_cluster_power=p_hfl_design_sig,
+        hfl_random_power=p_hfl_random_sig,
+        sfl_power=p_sfl_sig,
+        dataset=args.dataset,
+        model=args.model
+    )
     '''
     # 生成EH专属测试集
     print("\n--- 生成EH专属测试集 ---")

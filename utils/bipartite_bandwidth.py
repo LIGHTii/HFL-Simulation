@@ -862,7 +862,7 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
     # B_cloud = 5e7              # 总云端带宽 (50 MHz)
     # p_m = np.ones(M) * 10.0    # 客户端发射功率 (W)
     N0 = 10**(-20.4)           # 噪声功率谱密度 (W/Hz)
-    path_loss_exponent = 2.0   # 路径损耗指数 (alpha)
+    path_loss_exponent = 2.5   # 路径损耗指数 (alpha)
     # g0_at_1m = 1e-4            # 在参考距离d0=1米处的信道增益
     g0_client_es = 1e-3
     g0_es_es = 1e-2
