@@ -372,7 +372,7 @@ if __name__ == '__main__':
     # 为随机B矩阵生成EH专属测试集
     print("\n🎲 为随机B矩阵生成EH专属测试集...")
     eh_testsets_random, eh_label_distributions_random = EHTestsetGenerator.create_eh_testsets(
-        dataset_test, A_random, B_random, C1_random, C2_random, dataset_train, dict_users, visualize=True
+        dataset_test, A_design, B_random, C1_random, C2_random, dataset_train, dict_users, visualize=True
     )
     
     # 为聚类B矩阵生成EH专属测试集
