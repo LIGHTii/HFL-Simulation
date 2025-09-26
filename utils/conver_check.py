@@ -4,7 +4,7 @@ class ConvergenceChecker:
     它监控验证损失和准确率，当损失和准确率都进入平台期时触发停止信号。
     判断收敛的对象为每轮epoch结束后，由所有EH模型在云端聚合得到的最终全局模型。
     """
-    def __init__(self, patience=4, min_delta_loss=0.0001, min_delta_acc=0.1):
+    def __init__(self, patience=4, min_delta_loss=0.001, min_delta_acc=0.1):
         """
         初始化收敛检查器。
         Args:
@@ -64,7 +64,7 @@ class ConvergenceChecker:
         acc_improved = current_acc > self.best_acc + self.min_delta_acc
         
         # 如果损失或准确率有任何一个改善，则重置等待轮次
-        if loss_improved or acc_improved:
+        if loss_improved or acc_improved or current_acc>=0.96:
             if loss_improved:
                 self.best_loss = current_loss
             if acc_improved:

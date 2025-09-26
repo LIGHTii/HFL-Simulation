@@ -229,7 +229,7 @@ def select_edge_servers_uniformly(node_ids, pos, es_ratio):
     return es_nodes, client_nodes
 '''
 
-def visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, save_path=None, cloud_pos=None, association_matrix=None):
+def visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, save_path=None, cloud_pos=None, association_matrix=None, filter_info=None):
     """
     生成节点地理分布可视化图
     
@@ -241,6 +241,7 @@ def visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, save_path
         save_path: 保存路径（可选）
         cloud_pos: 云服务器位置 (lon, lat)，如果提供则显示
         association_matrix: 客户端到边缘服务器的关联矩阵，如果提供则绘制关联边
+        filter_info: 地理筛选信息字典，包含 {'center': (lat, lon), 'radius': float}
     
     Returns:
         str: 保存的文件名
@@ -290,16 +291,53 @@ def visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, save_path
         plt.annotate('Cloud', (cloud_pos[0], cloud_pos[1]), xytext=(5, 5),
                    textcoords='offset points', fontsize=10, fontweight='bold', color='#d83a3a')
     
+    # 如果提供了筛选信息，绘制筛选范围圆圈
+    if filter_info is not None and 'center' in filter_info and 'radius' in filter_info:
+        center_lat, center_lon = filter_info['center']
+        radius_km = filter_info['radius']
+        
+        # 绘制筛选中心点
+        plt.scatter([center_lon], [center_lat], 
+                   c='#ff6b6b', marker='x', s=200, linewidths=3,
+                   label=f'Filter Center', zorder=5)
+        plt.annotate(f'Filter Center\n({center_lat:.3f}, {center_lon:.3f})', 
+                   (center_lon, center_lat), xytext=(10, 10),
+                   textcoords='offset points', fontsize=8, fontweight='bold', 
+                   color='#ff6b6b', zorder=5)
+        
+        # 计算在经纬度坐标系下的近似半径（简化计算）
+        # 1度纬度约等于111km，经度则取决于纬度
+        lat_radius = radius_km / 111.0  # 纬度半径
+        lon_radius = radius_km / (111.0 * np.cos(np.radians(center_lat)))  # 经度半径
+        
+        # 绘制筛选范围圆圈
+        circle = plt.Circle((center_lon, center_lat), max(lat_radius, lon_radius), 
+                          fill=False, color='#ff6b6b', linewidth=2, linestyle='--', 
+                          alpha=0.7, zorder=1)
+        plt.gca().add_patch(circle)
+        
+        # 使用椭圆更准确地表示地理范围（考虑经纬度差异）
+        from matplotlib.patches import Ellipse
+        ellipse = Ellipse((center_lon, center_lat), 2*lon_radius, 2*lat_radius, 
+                         fill=False, color='#ff6b6b', linewidth=2, linestyle=':', 
+                         alpha=0.5, zorder=1)
+        plt.gca().add_patch(ellipse)
+    
     plt.xlabel('Longitude')
     plt.ylabel('Latitude')
     total_nodes = len(client_nodes) + len(es_nodes)
     
-    # 根据是否包含关联边和云服务器修改标题
+    # 根据是否包含关联边、云服务器和筛选信息修改标题
     title = f'Geographic Distribution of Nodes\n(ES Ratio: {es_ratio:.2f}, Total: {total_nodes} nodes)'
     if association_matrix is not None:
         title += ' with Associations'
     if cloud_pos is not None:
         title += ' and Cloud Server'
+    if filter_info is not None:
+        if 'radius_ratio' in filter_info:
+            title += f'\nFiltered (R={filter_info["radius"]:.1f}km, Ratio={filter_info["radius_ratio"]:.2f})'
+        else:
+            title += f'\nFiltered (R={filter_info["radius"]:.1f}km)'
     plt.title(title)
     
     plt.legend()
@@ -311,6 +349,11 @@ def visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, save_path
         viz_filename = save_path
     else:
         viz_filename = f"./save/node_distribution_es{len(es_nodes)}_ratio{es_ratio:.2f}"
+        if filter_info is not None:
+            if 'radius_ratio' in filter_info:
+                viz_filename += f"_filtered_ratio{filter_info['radius_ratio']:.2f}_r{filter_info['radius']:.0f}km"
+            else:
+                viz_filename += f"_filtered_r{filter_info['radius']:.0f}km"
         if association_matrix is not None:
             viz_filename += "_with_associations"
         if cloud_pos is not None:
@@ -339,6 +382,108 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     R = 6371.0
     return R * c
+
+def filter_nodes_by_geographic_range(G, node_ids, pos, filter_radius_ratio=0.3, 
+                                   center_lat=None, center_lon=None):
+    """
+    基于地理范围筛选节点：以指定中心点为圆心，在指定半径范围内筛选节点
+    筛选半径 = 图地理范围 * 范围比例
+    
+    Args:
+        G: NetworkX图对象
+        node_ids: 所有有效节点ID列表
+        pos: 节点位置字典 {node_id: (lon, lat)}
+        filter_radius_ratio: 筛选半径比例（相对于图的地理范围）
+        center_lat: 筛选中心纬度（如果为None，使用所有节点的质心）
+        center_lon: 筛选中心经度（如果为None，使用所有节点的质心）
+    
+    Returns:
+        tuple: (筛选后的图对象, 筛选后的节点ID列表, 筛选后的位置字典, 实际使用的中心点)
+    """
+    if not node_ids:
+        print("Warning: No valid nodes to filter")
+        return G, [], {}, None
+        
+    print(f"\n========== 地理范围节点筛选 ==========")
+    print(f"筛选前节点总数: {len(node_ids)}")
+    print(f"筛选半径比例: {filter_radius_ratio:.2f}")
+    
+    # 计算图的地理范围
+    latitudes = [pos[node_id][1] for node_id in node_ids if node_id in pos]
+    longitudes = [pos[node_id][0] for node_id in node_ids if node_id in pos]
+    
+    if not latitudes or not longitudes:
+        print("Error: No valid positions to calculate graph range")
+        return G, [], {}, None
+    
+    lat_min, lat_max = min(latitudes), max(latitudes)
+    lon_min, lon_max = min(longitudes), max(longitudes)
+    
+    # 计算图的地理范围（使用对角线距离作为参考）
+    graph_diagonal_km = calculate_distance(lat_min, lon_min, lat_max, lon_max)
+    graph_range_km = graph_diagonal_km / 2  # 使用对角线的一半作为基准范围
+    
+    # 根据比例计算实际筛选半径
+    filter_radius = graph_range_km * filter_radius_ratio
+    
+    print(f"图地理范围统计:")
+    print(f"  纬度范围: [{lat_min:.4f}, {lat_max:.4f}] (跨度: {lat_max-lat_min:.4f}°)")
+    print(f"  经度范围: [{lon_min:.4f}, {lon_max:.4f}] (跨度: {lon_max-lon_min:.4f}°)")
+    print(f"  对角线距离: {graph_diagonal_km:.2f} km")
+    print(f"  基准范围半径: {graph_range_km:.2f} km")
+    print(f"  实际筛选半径: {filter_radius:.2f} km (比例: {filter_radius_ratio:.2f})")
+    
+    # 如果未指定中心点，计算所有节点的地理质心
+    if center_lat is None or center_lon is None:
+        center_lat = np.mean(latitudes)
+        center_lon = np.mean(longitudes)
+        print(f"使用图质心作为筛选中心: ({center_lat:.4f}, {center_lon:.4f})")
+    else:
+        print(f"使用指定中心点: ({center_lat:.4f}, {center_lon:.4f})")
+    
+    # 筛选在指定范围内的节点
+    filtered_node_ids = []
+    removed_node_ids = []
+    filtered_pos = {}
+    
+    for node_id in node_ids:
+        if node_id not in pos:
+            removed_node_ids.append(node_id)
+            continue
+            
+        lon, lat = pos[node_id]
+        distance = calculate_distance(center_lat, center_lon, lat, lon)
+        
+        if distance <= filter_radius:
+            filtered_node_ids.append(node_id)
+            filtered_pos[node_id] = pos[node_id]
+        else:
+            removed_node_ids.append(node_id)
+    
+    # 从图中移除超出范围的节点
+    if removed_node_ids:
+        G_filtered = G.copy()
+        G_filtered.remove_nodes_from(removed_node_ids)
+        print(f"移除超出范围的节点数: {len(removed_node_ids)}")
+        print(f"筛选后节点数: {len(filtered_node_ids)}")
+        print(f"节点保留率: {len(filtered_node_ids)/len(node_ids):.2%}")
+    else:
+        G_filtered = G
+        print("所有节点都在筛选范围内")
+    
+    # 打印距离统计
+    if filtered_node_ids:
+        distances = [calculate_distance(center_lat, center_lon, pos[node_id][1], pos[node_id][0]) 
+                    for node_id in filtered_node_ids if node_id in pos]
+        if distances:
+            print(f"筛选节点到中心距离统计:")
+            print(f"  最小距离: {min(distances):.2f} km")
+            print(f"  最大距离: {max(distances):.2f} km")
+            print(f"  平均距离: {np.mean(distances):.2f} km")
+            print(f"  距离标准差: {np.std(distances):.2f} km")
+    
+    center_point = (center_lat, center_lon)
+    return G_filtered, filtered_node_ids, filtered_pos, center_point
 
 def build_bipartite_graph(graphml_file="./graph-example/Ulaknet.graphml", es_ratio=None, visualize=True):
     """
@@ -404,12 +549,34 @@ def build_bipartite_graph(graphml_file="./graph-example/Ulaknet.graphml", es_rat
     if not node_ids:
         print("Error: No valid nodes after filtering")
         return None, [], [], None, None, None
-        
+    
     # 如果es_ratio为None，设置默认值
     if es_ratio is None:
         args = args_parser()
         es_ratio = args.es_ratio
         print(f"Using default es_ratio from args: {es_ratio}")
+    
+    # 地理范围节点筛选（如果启用）
+    try:
+        args = args_parser()
+        if args.enable_node_filter:
+            print(f"地理节点筛选已启用")
+            G, node_ids, pos, filter_center = filter_nodes_by_geographic_range(
+                G, node_ids, pos, 
+                filter_radius_ratio=args.filter_radius_ratio,
+                center_lat=args.filter_center_lat,
+                center_lon=args.filter_center_lon
+            )
+            
+            if not node_ids:
+                print("Error: No nodes remaining after geographic filtering")
+                return None, [], [], None, None, None
+                
+            print(f"地理筛选完成，剩余节点数: {len(node_ids)}")
+        else:
+            print(f"地理节点筛选未启用，使用所有有效节点: {len(node_ids)}")
+    except Exception as e:
+        print(f"Warning: Geographic filtering failed, using all valid nodes: {e}")
 
     # 使用封装的函数选择边缘服务器
     es_nodes, client_nodes = select_edge_servers_uniformly(node_ids, pos, es_ratio)
@@ -457,7 +624,43 @@ def build_bipartite_graph(graphml_file="./graph-example/Ulaknet.graphml", es_rat
         sample_node = G.nodes[client_nodes[0]]
         print(f"Node data sample: {sample_node}")
 
-    return bipartite_graph, client_nodes, es_nodes, distance_matrix, pos
+    # 准备筛选信息（如果启用了筛选）
+    filter_info = None
+    try:
+        args = args_parser()
+        if args.enable_node_filter:
+            # 获取筛选中心点信息
+            if args.filter_center_lat is not None and args.filter_center_lon is not None:
+                center = (args.filter_center_lat, args.filter_center_lon)
+            else:
+                # 使用所有节点的质心
+                all_nodes = client_nodes + es_nodes
+                latitudes = [pos[node][1] for node in all_nodes if node in pos]
+                longitudes = [pos[node][0] for node in all_nodes if node in pos]
+                center = (np.mean(latitudes), np.mean(longitudes))
+            
+            # 计算实际的筛选半径用于显示
+            all_nodes = client_nodes + es_nodes
+            all_latitudes = [pos[node][1] for node in all_nodes if node in pos]
+            all_longitudes = [pos[node][0] for node in all_nodes if node in pos]
+            if all_latitudes and all_longitudes:
+                lat_min, lat_max = min(all_latitudes), max(all_latitudes)
+                lon_min, lon_max = min(all_longitudes), max(all_longitudes)
+                graph_diagonal_km = calculate_distance(lat_min, lon_min, lat_max, lon_max)
+                graph_range_km = graph_diagonal_km / 2
+                actual_filter_radius = graph_range_km * args.filter_radius_ratio
+            else:
+                actual_filter_radius = 0
+            
+            filter_info = {
+                'center': center,
+                'radius': actual_filter_radius,
+                'radius_ratio': args.filter_radius_ratio
+            }
+    except:
+        pass  # 如果获取筛选信息失败，filter_info保持为None
+
+    return bipartite_graph, client_nodes, es_nodes, distance_matrix, pos, filter_info
 
 def plot_graph(bipartite_graph, client_nodes, es_nodes):
     pos = nx.get_node_attributes(bipartite_graph, 'pos')
@@ -1019,7 +1222,7 @@ def run_bandwidth_allocation(graphml_file=None, es_ratio=None, max_capacity=None
             max_capacity = args.max_capacity
     
     # 构建二部图
-    bipartite_graph, client_nodes, es_nodes, distance_matrix, pos = build_bipartite_graph(
+    bipartite_graph, client_nodes, es_nodes, distance_matrix, pos, filter_info = build_bipartite_graph(
         graphml_file, es_ratio, visualize)
     if bipartite_graph is None:
         return None, [], [], None, None, None, None, None
@@ -1039,11 +1242,16 @@ def run_bandwidth_allocation(graphml_file=None, es_ratio=None, max_capacity=None
     
     # # 使用与establish_communication_channels中相同的max_capacity值进行验证
     # validate_results(B_cloud=5e7, B_n=B_n, r=r, assignments=assignments, loads=loads, max_capacity=max_capacity)
-    visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, cloud_pos=cloud_pos, association_matrix=original_association_matrix)
+    visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, cloud_pos=cloud_pos, association_matrix=original_association_matrix, filter_info=filter_info)
     # 返回精简的结果集
     return bipartite_graph, client_nodes, active_es_nodes, association_matrix, r_client_to_active_es, r_es, r_es_to_cloud, r_client_to_cloud
 
 
 if __name__ == '__main__':
     args = args_parser()
-    build_bipartite_graph(graphml_file='graph-example/Ulaknet.graphml', es_ratio=args.es_ratio)
+    result = build_bipartite_graph(graphml_file='graph-example/Ulaknet.graphml', es_ratio=args.es_ratio)
+    if result:
+        bipartite_graph, client_nodes, es_nodes, distance_matrix, pos, filter_info = result
+        print(f"Built bipartite graph with {len(client_nodes)} clients and {len(es_nodes)} edge servers")
+        if filter_info:
+            print(f"Applied geographic filter: center {filter_info['center']}, radius {filter_info['radius']} km")

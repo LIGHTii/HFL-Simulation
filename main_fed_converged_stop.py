@@ -336,7 +336,7 @@ if __name__ == '__main__':
     B_random = get_B(num_ESs, num_EHs)
 
     # 构建两套层级结构（用于联邦学习聚合）
-    C1_random, C2_random = build_hierarchy(A_random, B_random)
+    C1_random, C2_random = build_hierarchy(A_design, B_random)
     C1_cluster, C2_cluster = build_hierarchy(A_design, B_cluster)
 
     # 构建通信实际的关联矩阵（用于通信开销计算）

@@ -78,10 +78,20 @@ def args_parser():
     # Network topology parameters
     parser.add_argument('--es_ratio', type=float, default=0.34,
                        help="ratio of edge servers to total nodes (default: 0.34)")
-    parser.add_argument('--graphml_file', type=str, default="graph-example/Ulaknet.graphml",
+    parser.add_argument('--graphml_file', type=str, default="graph-example/754Kdl.graphml",
                        help="path to the GraphML network topology file")
     parser.add_argument('--max_capacity', type=int, default=0,
                        help="maximum capacity of each edge server (0 for automatic calculation based on client/ES ratio)")
+
+    # Node filtering parameters
+    parser.add_argument('--enable_node_filter', action='store_true',
+                       help="enable geographic node filtering based on centroid")
+    parser.add_argument('--filter_radius_ratio', type=float, default=0.3,
+                       help="radius ratio for node filtering (filter_radius = graph_range * ratio, default: 0.3)")
+    parser.add_argument('--filter_center_lat', type=float, default=None,
+                       help="latitude of filter center (if not specified, uses graph centroid)")
+    parser.add_argument('--filter_center_lon', type=float, default=None,
+                       help="longitude of filter center (if not specified, uses graph centroid)")
 
     # Data saving and loading parameters
     parser.add_argument('--save_data', action='store_true',
