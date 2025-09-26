@@ -4,22 +4,7 @@
 
 import numpy as np
 import torch
-from torch.utils.da        for eh_idx in range(num_EHs):
-            print(f"\nGenerating personalized test set for EH {eh_idx}...")
-            testset_indices = []
-            
-            # 处理零分布情况：如果某个EH没有任何训练数据，使用均匀分布
-            if np.sum(label_dist) == 0:
-                print(f"  Warning: EH {eh_idx} has no downstream clients, using uniform distribution")
-                uniform_dist = np.ones(num_classes) / num_classes
-                smoothed_dist = uniform_dist
-            else:
-                # 确保分布中没有零值（为了防止数值错误），但保持原有分布特性
-                epsilon = 1e-6  # 减小epsilon值，减少对原分布的影响
-                smoothed_dist = label_dist + epsilon
-                smoothed_dist = smoothed_dist / smoothed_dist.sum()
-            
-            print(f"  EH {eh_idx} label distribution: {smoothed_dist}")t, DataLoader, Subset
+from torch.utils.data import Dataset, DataLoader, Subset
 import matplotlib.pyplot as plt
 
 class EHTestsetGenerator:
@@ -137,7 +122,7 @@ class EHTestsetGenerator:
         # 计算每个EH的目标测试集大小
         # 使用固定大小确保所有EH都有足够的测试样本
         min_test_size_per_eh = max(500, len(dataset_test) // (num_EHs * 2))  # 至少500个样本，或者平均值的一半
-        print(f"Target test set size per EH: {min_test_size_per_eh}")
+        print(f"每个EH的目标测试集大小: {min_test_size_per_eh}")
         
         for eh_idx, label_dist in eh_label_distributions.items():
             print(f"\n为EH {eh_idx} 生成个性化测试集...")
@@ -166,7 +151,7 @@ class EHTestsetGenerator:
                 available_indices = test_indices_by_class[c]
                 
                 if len(available_indices) == 0:
-                    print(f"    Class {c}: No available samples")
+                    print(f"    类别 {c}: 无可用样本")
                     actual_samples_per_class.append(0)
                     continue
                 
@@ -177,18 +162,18 @@ class EHTestsetGenerator:
                 else:
                     # 需要重复采样
                     selected_indices = np.random.choice(available_indices, size=target_samples, replace=True)
-                    print(f"    Class {c}: Need {target_samples} samples, but only {len(available_indices)} available, performing repeated sampling")
+                    print(f"    类别 {c}: 需要 {target_samples} 个样本，但只有 {len(available_indices)} 个可用，进行重复采样")
                 
                 testset_indices.extend(selected_indices)
                 actual_samples_per_class.append(len(selected_indices))
             
-            print(f"  Actual samples per class: {actual_samples_per_class}")
-            print(f"  EH {eh_idx} total test set size: {len(testset_indices)}")
+            print(f"  实际每类样本数: {actual_samples_per_class}")
+            print(f"  EH {eh_idx} 测试集总大小: {len(testset_indices)}")
             
             # 如果总样本数仍然不足，进行全局补充采样
             if len(testset_indices) < min_test_size_per_eh:
                 remaining_needed = min_test_size_per_eh - len(testset_indices)
-                print(f"  Need to supplement {remaining_needed} samples")
+                print(f"  需要补充 {remaining_needed} 个样本")
                 
                 # 从所有测试样本中按分布比例补充
                 all_test_indices = list(range(len(dataset_test)))
@@ -208,12 +193,12 @@ class EHTestsetGenerator:
                             additional_indices.extend(additional_selected)
                 
                 testset_indices.extend(additional_indices)
-                print(f"  Total test set size after supplementation: {len(testset_indices)}")
+                print(f"  补充后测试集总大小: {len(testset_indices)}")
             
             eh_testsets[eh_idx] = np.array(testset_indices)
         
         # 验证和统计生成的测试集
-        print(f"\n=== Test Set Generation Result Validation ===")
+        print(f"\n=== 测试集生成结果验证 ===")
         total_unique_samples = set()
         total_samples_used = 0
         
@@ -222,17 +207,17 @@ class EHTestsetGenerator:
             total_unique_samples.update(unique_samples)
             total_samples_used += len(testset)
             
-            print(f"EH {eh_idx}: test set size={len(testset)}, unique samples={len(unique_samples)}")
+            print(f"EH {eh_idx}: 测试集大小={len(testset)}, 唯一样本={len(unique_samples)}")
         
         coverage_rate = len(total_unique_samples) / len(dataset_test)
         avg_reuse_rate = total_samples_used / len(total_unique_samples) if len(total_unique_samples) > 0 else 0
         
-        print(f"\nOverall Statistics:")
-        print(f"  Original test set size: {len(dataset_test)}")
-        print(f"  Unique samples used: {len(total_unique_samples)}")
-        print(f"  Test set coverage rate: {coverage_rate:.1%}")
-        print(f"  Average sample reuse rate: {avg_reuse_rate:.2f}x")
-        print(f"  Total samples used: {total_samples_used}")
+        print(f"\n总体统计:")
+        print(f"  原始测试集大小: {len(dataset_test)}")
+        print(f"  使用的唯一样本数: {len(total_unique_samples)}")
+        print(f"  测试集覆盖率: {coverage_rate:.1%}")
+        print(f"  平均样本重复使用率: {avg_reuse_rate:.2f}x")
+        print(f"  总使用样本数: {total_samples_used}")
         print("=" * 35)
         
         # 可视化EH的标签分布和对应的测试集分布
@@ -257,7 +242,7 @@ class EHTestsetGenerator:
         try:
             # 计算测试集的分布
             eh_test_distributions = {}
-            print("\n=== EH Test Set Distribution Statistics ===")
+            print("\n=== EH测试集分布统计 ===")
             for eh_idx, test_indices in eh_testsets.items():
                 test_dist = np.zeros(num_classes)
                 unique_indices = len(np.unique(test_indices))  # 统计唯一样本数
@@ -276,22 +261,22 @@ class EHTestsetGenerator:
                 eh_test_distributions[eh_idx] = test_dist
                 
                 # 打印统计信息
-                print(f"EH {eh_idx}: total samples={total_samples}, unique samples={unique_indices}, duplicate rate={1-unique_indices/total_samples:.2%}")
-                print(f"  Test set distribution: {test_dist}")
+                print(f"EH {eh_idx}: 总样本={total_samples}, 唯一样本={unique_indices}, 重复率={1-unique_indices/total_samples:.2%}")
+                print(f"  测试集分布: {test_dist}")
                 
                 # 计算与期望分布的差异
                 expected_dist = eh_label_distributions[eh_idx]
                 if np.sum(expected_dist) > 0:
                     expected_dist = expected_dist / np.sum(expected_dist)
                     kl_divergence = np.sum(test_dist * np.log((test_dist + 1e-10) / (expected_dist + 1e-10)))
-                    print(f"  KL divergence from expected distribution: {kl_divergence:.4f}")
+                    print(f"  与期望分布的KL散度: {kl_divergence:.4f}")
             print("=" * 30)
             
             # 检查数据维度
             for eh_idx in sorted(eh_label_distributions.keys()):
                 if len(eh_label_distributions[eh_idx]) != num_classes:
                     print(
-                        f"Warning: EH {eh_idx} label distribution dimension {len(eh_label_distributions[eh_idx])} does not match number of classes {num_classes}")
+                        f"警告：EH {eh_idx} 标签分布维度 {len(eh_label_distributions[eh_idx])} 与类别数 {num_classes} 不匹配")
                     # 修复维度问题，填充为零向量
                     corrected_dist = np.zeros(num_classes)
                     for i in range(min(len(eh_label_distributions[eh_idx]), num_classes)):
@@ -308,7 +293,7 @@ class EHTestsetGenerator:
             for i, eh_idx in enumerate(sorted(eh_label_distributions.keys())):
                 # 确保索引不越界
                 if i >= len(axes):
-                    print(f"Warning: Chart index {i} out of range, skipped EH {eh_idx}")
+                    print(f"警告：图表索引 {i} 超出范围，已跳过 EH {eh_idx}")
                     continue
                 
                 x_range = np.arange(num_classes)  # 明确创建x轴数值范围
@@ -319,9 +304,9 @@ class EHTestsetGenerator:
                 if np.sum(expected_dist) > 0:
                     expected_dist = expected_dist / np.sum(expected_dist)
                 ax1.bar(x_range, expected_dist, alpha=0.7, color='skyblue')
-                ax1.set_title(f'EH {eh_idx} Expected Distribution\n(Based on Downstream Clients)')
-                ax1.set_xlabel('Class')
-                ax1.set_ylabel('Proportion')
+                ax1.set_title(f'EH {eh_idx} 期望分布\n(基于下游客户端)')
+                ax1.set_xlabel('类别')
+                ax1.set_ylabel('比例')
                 ax1.set_xticks(range(num_classes))
                 ax1.set_ylim(0, max(0.1, np.max(expected_dist) * 1.1))
                 
@@ -329,9 +314,9 @@ class EHTestsetGenerator:
                 ax2 = axes[i, 1]
                 actual_dist = eh_test_distributions[eh_idx]
                 ax2.bar(x_range, actual_dist, alpha=0.7, color='lightcoral')
-                ax2.set_title(f'EH {eh_idx} Actual Test Distribution\n(Samples: {len(eh_testsets[eh_idx])})')
-                ax2.set_xlabel('Class')
-                ax2.set_ylabel('Proportion')
+                ax2.set_title(f'EH {eh_idx} 实际测试分布\n(样本数: {len(eh_testsets[eh_idx])})')
+                ax2.set_xlabel('类别')
+                ax2.set_ylabel('比例')
                 ax2.set_xticks(range(num_classes))
                 ax2.set_ylim(0, max(0.1, np.max(actual_dist) * 1.1))
                 
@@ -340,11 +325,11 @@ class EHTestsetGenerator:
                 width = 0.35
                 x_pos1 = x_range - width/2
                 x_pos2 = x_range + width/2
-                ax3.bar(x_pos1, expected_dist, width, label='Expected', alpha=0.7, color='skyblue')
-                ax3.bar(x_pos2, actual_dist, width, label='Actual', alpha=0.7, color='lightcoral')
-                ax3.set_title(f'EH {eh_idx} Distribution Comparison')
-                ax3.set_xlabel('Class')
-                ax3.set_ylabel('Proportion')
+                ax3.bar(x_pos1, expected_dist, width, label='期望分布', alpha=0.7, color='skyblue')
+                ax3.bar(x_pos2, actual_dist, width, label='实际分布', alpha=0.7, color='lightcoral')
+                ax3.set_title(f'EH {eh_idx} 分布对比')
+                ax3.set_xlabel('类别')
+                ax3.set_ylabel('比例')
                 ax3.set_xticks(range(num_classes))
                 ax3.legend()
                 
@@ -354,7 +339,7 @@ class EHTestsetGenerator:
                     cosine_sim = np.dot(expected_dist, actual_dist) / (
                         np.linalg.norm(expected_dist) * np.linalg.norm(actual_dist) + 1e-10
                     )
-                    ax3.text(0.02, 0.98, f'Cosine Similarity: {cosine_sim:.3f}', 
+                    ax3.text(0.02, 0.98, f'余弦相似度: {cosine_sim:.3f}', 
                             transform=ax3.transAxes, verticalalignment='top',
                             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
             
@@ -366,10 +351,10 @@ class EHTestsetGenerator:
             
             plt.savefig('./save/eh_distributions_enhanced.png', dpi=300, bbox_inches='tight')
             plt.close()
-            print("Enhanced EH distribution comparison chart saved to ./save/eh_distributions_enhanced.png")
+            print("增强版EH分布对比图已保存到 ./save/eh_distributions_enhanced.png")
         except Exception as e:
-            print(f"Error occurred while visualizing EH distributions: {e}")
-            print("Skipping visualization, continuing execution")
+            print(f"可视化EH分布时出错: {e}")
+            print("跳过可视化，继续执行程序")
 
 class EHSubset(Dataset):
     """表示EH专属测试集的数据集类"""
