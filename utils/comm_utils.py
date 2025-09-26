@@ -199,7 +199,7 @@ def calculate_transmission_time(model_size, rate_matrix, association_matrix):
     # 返回最大传输时间
     if transmission_times:
         max_transmission_time = max(transmission_times)
-        print(f"计算得到的传输时间列表: {[f'{t:.4f}' for t in transmission_times]} 秒")
+        # print(f"计算得到的传输时间列表: {[f'{t:.4f}' for t in transmission_times]} 秒")
         print(f"最大传输时间: {max_transmission_time:.4f} 秒")
         return max_transmission_time
     else:
@@ -439,5 +439,93 @@ def select_eh(B_matrix, es_es_rate_matrix, es_cloud_rate_matrix, model_size):
     print(f"EH-Cloud关联矩阵形状: {eh_cloud_matrix.shape}")
     print(f"EH-Cloud关联矩阵:\n{eh_cloud_matrix.flatten()}")
 
+    return es_eh_matrix, eh_cloud_matrix
+
+
+def select_eh_random(B_matrix):
+    """
+    在每一个簇中随机挑选一个ES作为EH
+    
+    Args:
+        B_matrix (np.ndarray): 关联矩阵B，形状为(num_es, num_clusters)
+    
+    Returns:
+        tuple: (es_eh_matrix, eh_cloud_matrix)
+            - es_eh_matrix (np.ndarray): ES-EH关联矩阵，形状为(num_es, num_es)
+            - eh_cloud_matrix (np.ndarray): EH-Cloud关联矩阵，形状为(num_es, 1)
+    
+    Example:
+        # 假设有4个ES，2个簇
+        B_matrix = np.array([[1, 0],    # ES0 属于簇0
+                            [1, 0],    # ES1 属于簇0
+                            [0, 1],    # ES2 属于簇1  
+                            [0, 1]])   # ES3 属于簇1
+        # 函数会在簇0中随机选择ES0或ES1作为EH，在簇1中随机选择ES2或ES3作为EH
+    """
+    if B_matrix is None or B_matrix.size == 0:
+        print("警告: B矩阵为空")
+        return np.array([]), np.array([])
+    
+    num_es = B_matrix.shape[0]
+    num_clusters = B_matrix.shape[1]
+    
+    selected_ehs = []  # 存储每个簇选中的EH索引
+    
+    print(f"开始为 {num_clusters} 个簇随机选择EH...")
+    
+    # 遍历每个簇
+    for cluster_id in range(num_clusters):
+        # 找到属于当前簇的所有ES
+        cluster_es_indices = []
+        for es_id in range(num_es):
+            if B_matrix[es_id, cluster_id] == 1:
+                cluster_es_indices.append(es_id)
+        
+        if not cluster_es_indices:
+            print(f"警告: 簇 {cluster_id} 中没有ES")
+            continue
+        
+        # 随机选择一个ES作为EH
+        selected_eh = random.choice(cluster_es_indices)
+        selected_ehs.append(selected_eh)
+        
+        print(f"簇 {cluster_id} 包含ES: {cluster_es_indices}")
+        print(f"簇 {cluster_id} 随机选择ES {selected_eh} 作为EH")
+    
+    # 构建ES-EH关联矩阵
+    num_selected_ehs = len(selected_ehs)
+    if num_selected_ehs == 0:
+        print("警告: 没有选择出任何EH")
+        return np.zeros((num_es, num_es), dtype=int), np.zeros((num_es, 1), dtype=int)
+    
+    # 创建ES-EH关联矩阵，形状为(num_es, num_es)
+    es_eh_matrix = np.zeros((num_es, num_es), dtype=int)
+    
+    # 根据原始B矩阵和选中的EH来填充关联矩阵
+    for cluster_id in range(num_clusters):
+        if cluster_id < len(selected_ehs):
+            selected_eh = selected_ehs[cluster_id]
+            
+            # 将属于该簇的所有ES关联到选中的EH
+            # 在矩阵中，第selected_eh列表示该EH，所有属于该簇的ES在该列置1
+            for es_id in range(num_es):
+                if B_matrix[es_id, cluster_id] == 1:
+                    es_eh_matrix[es_id, selected_eh] = 1
+    
+    # 构建EH-Cloud关联矩阵
+    # 矩阵形状为(num_es, 1)，表示每个ES与云服务器的连接关系
+    # 只有被选为EH的ES才与云服务器直接连接
+    eh_cloud_matrix = np.zeros((num_es, 1), dtype=int)
+    
+    # 将选中的EH标记为与云服务器连接
+    for selected_eh in selected_ehs:
+        eh_cloud_matrix[selected_eh, 0] = 1
+    
+    print(f"最终随机选择的EH列表: {selected_ehs}")
+    print(f"ES-EH关联矩阵形状: {es_eh_matrix.shape}")
+    print(f"ES-EH关联矩阵:\n{es_eh_matrix}")
+    print(f"EH-Cloud关联矩阵形状: {eh_cloud_matrix.shape}")
+    print(f"EH-Cloud关联矩阵:\n{eh_cloud_matrix.flatten()}")
+    
     return es_eh_matrix, eh_cloud_matrix
 

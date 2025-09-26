@@ -851,10 +851,10 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
         args = args_parser()
         if args.max_capacity > 0:
             max_capacity = args.max_capacity
-            print(f"Using max_capacity: {max_capacity} from command line arguments")
+            # print(f"Using max_capacity: {max_capacity} from command line arguments")
         else:
             max_capacity = max(1, int(len(client_nodes) / len(es_nodes)) + 1)
-            print(f"Automatically calculated max_capacity: {max_capacity} based on {len(client_nodes)} clients and {len(es_nodes)} edge servers")
+            # print(f"Automatically calculated max_capacity: {max_capacity} based on {len(client_nodes)} clients and {len(es_nodes)} edge servers")
             
     # 1. 初始化系统参数
     M = len(client_nodes)      # 客户端数量
@@ -887,19 +887,19 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
 
     
     # 打印计算结果示例
-    print(f"信道增益矩阵 (g, 前5x5):\n{g[:min(5, M), :min(5, N)]}\n")
-    print(f"带宽分配矩阵 (B_mn, 前5x5):\n{B_mn[:min(5, M), :min(5, N)]}\n")
-    print(f"初始传输速率矩阵 (r_client_to_es, 前5x5) [bit/s]:\n{r_client_to_es[:min(5, M), :min(5, N)]}")
-    
+    # print(f"信道增益矩阵 (g, 前5x5):\n{g[:min(5, M), :min(5, N)]}\n")
+    # print(f"带宽分配矩阵 (B_mn, 前5x5):\n{B_mn[:min(5, M), :min(5, N)]}\n")
+    # print(f"初始传输速率矩阵 (r_client_to_es, 前5x5) [bit/s]:\n{r_client_to_es[:min(5, M), :min(5, N)]}")
+    #
     #=======================STEP 2: 根据传输速率创建关联矩阵========================#
     print("\n========== 基于最大传输速率为客户端分配边缘服务器 ==========")
 
     # 基于最大传输速率为每个客户端选择边缘服务器
     assignments, original_association_matrix = create_association_based_on_rate(r_client_to_es)
-    print(f"创建了基于最大传输速率的关联矩阵")
-    print(f"总关联数: {len(assignments)}/{M} ({len(assignments)/M:.2%})")
-    print(f"原始关联矩阵形状: {original_association_matrix.shape}")
-    print(f"原始关联矩阵示例 (前5x5):\n{original_association_matrix[:min(5, M), :min(5, N)]}")
+    # print(f"创建了基于最大传输速率的关联矩阵")
+    # print(f"总关联数: {len(assignments)}/{M} ({len(assignments)/M:.2%})")
+    # print(f"原始关联矩阵形状: {original_association_matrix.shape}")
+    # print(f"原始关联矩阵示例 (前5x5):\n{original_association_matrix[:min(5, M), :min(5, N)]}")
 
     #=======================STEP 3: 确定活跃边缘服务器集合并生成新关联矩阵========================#
     print("\n========== 根据关联矩阵确定活跃边缘服务器集合并生成(client, active_es)关联矩阵 ==========")
@@ -910,17 +910,17 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
     N_active = len(active_es_nodes)
 
     print(f"活跃边缘服务器数量: {N_active}/{N} ({N_active/N:.2%})")
-    print(f"活跃边缘服务器索引: {active_es_indices}")
+    # print(f"活跃边缘服务器索引: {active_es_indices}")
 
     # 删除空列，生成(client, active_es)关联矩阵
     association_matrix = original_association_matrix[:, active_es_indices]
-    print(f"删除空列后的关联矩阵形状: {association_matrix.shape} (client×active_es)")
-    print(f"新关联矩阵示例 (前5x5):\n{association_matrix}")
+    # print(f"删除空列后的关联矩阵形状: {association_matrix.shape} (client×active_es)")
+    # print(f"新关联矩阵示例 (前5x5):\n{association_matrix}")
 
     # 同时调整r_client_to_es，只保留客户端到活跃ES的传输速率
     r_client_to_active_es = r_client_to_es[:, active_es_indices]
-    print(f"调整后的客户端到活跃ES传输速率矩阵形状: {r_client_to_active_es.shape} (client×active_es)")
-    print(f"客户端到活跃ES传输速率示例 (前5x5) [bit/s]:\n{r_client_to_active_es[:min(5, M), :min(5, N_active)]}")
+    # print(f"调整后的客户端到活跃ES传输速率矩阵形状: {r_client_to_active_es.shape} (client×active_es)")
+    # print(f"客户端到活跃ES传输速率示例 (前5x5) [bit/s]:\n{r_client_to_active_es[:min(5, M), :min(5, N_active)]}")
 
     if N_active == 0:
         # 报错并终止程序
@@ -945,9 +945,9 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
                 active_es_distance_matrix[i, j] = float('inf')
     
     print(f"生成活跃ES距离矩阵，形状: {active_es_distance_matrix.shape}")
-    if N_active > 0:
-        print(f"活跃ES距离矩阵示例 (前5x5) [米]:\n{active_es_distance_matrix[:min(5, N_active), :min(5, N_active)]}")
-    
+    # if N_active > 0:
+    #     print(f"活跃ES距离矩阵示例 (前5x5) [米]:\n{active_es_distance_matrix[:min(5, N_active), :min(5, N_active)]}")
+    #
     #=======================STEP 5: 计算活跃es-es传输速率========================#
     print("\n========== 计算活跃边缘服务器之间的传输速率 ==========")
     
@@ -981,15 +981,15 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
     #             r_es[idx_i, idx_j] = r_es_active[i, j]
 
     # 打印结果示例
-    print(f"活跃ES间信道增益示例 (前5x5):\n{g_es[:min(5, N_active), :min(5, N_active)]}\n")
-    print(f"活跃ES间带宽分配示例 (前5x5) [Hz]:\n{B_es[:min(5, N_active), :min(5, N_active)]}\n")
-    print(f"活跃ES间传输速率示例 (前5x5) [bit/s]:\n{r_es_active[:min(5, N_active), :min(5, N_active)]}")
-    
+    # print(f"活跃ES间信道增益示例 (前5x5):\n{g_es[:min(5, N_active), :min(5, N_active)]}\n")
+    # print(f"活跃ES间带宽分配示例 (前5x5) [Hz]:\n{B_es[:min(5, N_active), :min(5, N_active)]}\n")
+    # print(f"活跃ES间传输速率示例 (前5x5) [bit/s]:\n{r_es_active[:min(5, N_active), :min(5, N_active)]}")
+    #
     # 打印平均传输速率
     if N_active > 1:
         avg_rate = np.sum(r_es_active) / (N_active * (N_active - 1))  # 排除对角线元素
-        print(f"活跃ES之间的平均传输速率: {avg_rate/1e6:.2f} Mbps")
-    
+        # print(f"活跃ES之间的平均传输速率: {avg_rate/1e6:.2f} Mbps")
+        #
     # 对于演示，显示完整ES矩阵的示例
     # print(f"完整ES传输速率矩阵示例 (前5x5) [bit/s]:\n{r_es[:min(5, N), :min(5, N)]}")
     
@@ -1022,8 +1022,8 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
             
             # 计算每个活跃边缘服务器到云的距离
             active_es_to_cloud_distance = np.zeros((N_active, 1))
-            print("\n活跃边缘服务器到云服务器的距离:")
-            
+            # print("\n活跃边缘服务器到云服务器的距离:")
+            #
             for i, idx in enumerate(active_es_indices):
                 es_node = es_nodes[idx]
                 if es_node in pos:
@@ -1031,12 +1031,12 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
                     # 计算地理距离(千米)并转换为米
                     distance_km = calculate_distance(es_pos[1], es_pos[0], cloud_lat, cloud_lon)
                     active_es_to_cloud_distance[i, 0] = distance_km * 1000
-                    print(f"  活跃ES{i}(原ES{idx}) → Cloud: {distance_km:.3f} km ({distance_km*1000:.1f} m)")
+                    # print(f"  活跃ES{i}(原ES{idx}) → Cloud: {distance_km:.3f} km ({distance_km*1000:.1f} m)")
                 else:
                     print(f"警告: 活跃边缘服务器 {es_node} 缺少位置信息，设置距离为无穷大")
                     active_es_to_cloud_distance[i, 0] = float('inf')
             
-            print(f"活跃ES到云距离矩阵形状: {active_es_to_cloud_distance.shape} (N_active×1)")
+            # print(f"活跃ES到云距离矩阵形状: {active_es_to_cloud_distance.shape} (N_active×1)")
         else:
             print("警告: 活跃边缘服务器缺少位置信息，无法计算云服务器位置")
             active_es_to_cloud_distance = None
@@ -1076,10 +1076,10 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
         for i in range(display_count):
             original_idx = active_es_indices[i]
             rate_mbps = r_es_to_cloud[i, 0] / 1e6  # 转换为Mbps
-            print(f"  活跃ES{i}(原ES{original_idx}) → Cloud: {rate_mbps:.2f} Mbps")
+            # print(f"  活跃ES{i}(原ES{original_idx}) → Cloud: {rate_mbps:.2f} Mbps")
 
-        if N_active > 10:
-            print(f"  ... 以及其他 {N_active - 10} 个活跃边缘服务器")
+        # if N_active > 10:
+        #     print(f"  ... 以及其他 {N_active - 10} 个活跃边缘服务器")
 
         # 计算平均活跃ES-Cloud传输速率
         print(f"活跃ES到云的平均传输速率: {np.mean(r_es_to_cloud)/1e6:.2f} Mbps")
@@ -1133,11 +1133,11 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
         print(f"  最大传输速率: {max_rate/1e6:.2f} Mbps")
         
         # 显示一些示例值
-        sample_size = min(5, M)
-        print(f"\n客户端到云的传输速率示例 (前{sample_size}个):")
-        for i in range(sample_size):
-            rate_mbps = r_client_to_cloud[i, 0] / 1e6
-            print(f"  客户端{i} → 云: {rate_mbps:.2f} Mbps")
+        # sample_size = min(5, M)
+        # print(f"\n客户端到云的传输速率示例 (前{sample_size}个):")
+        # for i in range(sample_size):
+        #     rate_mbps = r_client_to_cloud[i, 0] / 1e6
+        #     print(f"  客户端{i} → 云: {rate_mbps:.2f} Mbps")
     else:
         print("警告: 由于缺少云服务器位置信息，无法计算客户端到云的直接传输速率")
 
@@ -1188,8 +1188,8 @@ def validate_results(B_cloud, B_n, r, assignments, loads, max_capacity):
             print("Pass: Prioritized high-rate devices")
         else:
             print("Warning: Sorting may not prioritize high-rate devices")
-    print(f"Manual check: Load std (balance) = {np.std(loads):.2f} (lower is better)")
-    print("Optimization Version: Hungarian + Simulated Annealing")
+    # print(f"Manual check: Load std (balance) = {np.std(loads):.2f} (lower is better)")
+    # print("Optimization Version: Hungarian + Simulated Annealing")
 
 def run_bandwidth_allocation(graphml_file=None, es_ratio=None, max_capacity=None, visualize=False):
     """
@@ -1231,8 +1231,8 @@ def run_bandwidth_allocation(graphml_file=None, es_ratio=None, max_capacity=None
     print(f"Total Client Nodes: {len(client_nodes)}")
     print(f"Total ES Nodes: {len(es_nodes)}")
     print(f"Distance Matrix Shape: {distance_matrix.shape}")
-    print(f"Distance Matrix (first 5x5):\n{distance_matrix[:5, :min(5, len(es_nodes))]}")
-    
+    # print(f"Distance Matrix (first 5x5):\n{distance_matrix[:5, :min(5, len(es_nodes))]}")
+
     # 分配带宽并获取传输速率
     client_nodes, active_es_nodes, original_association_matrix, association_matrix, r_client_to_active_es, r_es, r_es_to_cloud, r_client_to_cloud, cloud_pos = establish_communication_channels(
         client_nodes, es_nodes, distance_matrix, pos, max_capacity)

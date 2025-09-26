@@ -32,7 +32,7 @@ from utils.data_partition import get_client_datasets
 from utils.visualize_client_data import visualize_client_data_distribution
 from utils.eh_test_utils import EHTestsetGenerator, test_eh_model
 from utils.bipartite_bandwidth import run_bandwidth_allocation, calculate_distance
-from utils.comm_utils import calculate_transmission_time, get_model_size_in_bits, select_eh
+from utils.comm_utils import calculate_transmission_time, get_model_size_in_bits, select_eh, select_eh_random
 from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, MobileNetCifar, LeNet5
 from models.Fed import FedAvg, FedAvg_layered
 from models.test import test_img
@@ -316,7 +316,7 @@ if __name__ == '__main__':
     k3 = args.EH_k3
     num_processes = args.num_processes
 
-    A_random = get_A_random(num_users, num_ESs)
+    # A_random = get_A_random(num_users, num_ESs)
 
     # 使用谱聚类生成B矩阵（替换原来的随机B矩阵）
     print("开始初始训练和谱聚类...")
@@ -342,13 +342,13 @@ if __name__ == '__main__':
     # 构建通信实际的关联矩阵（用于通信开销计算）
     # 两种A关联矩阵直接可用，B关联矩阵为（es，簇）形式，需转化为es-es，还需生成es-cloud
     model_size = get_model_size_in_bits(w_glob)
-    B_random_comm, C_random_comm = select_eh(B_random, r_es, r_es_to_cloud, model_size)
+    B_random_comm, C_random_comm = select_eh_random(B_random)
     B_cluster_comm, C_cluster_comm = select_eh(B_cluster, r_es, r_es_to_cloud, model_size)
     print("C1_random (一级->客户端):", C1_random)
     print("C2_random (二级->一级):", C2_random)
     print("C1_cluster (一级->客户端):", C1_cluster)
     print("C2_cluster (二级->一级):", C2_cluster)
-    t_client_to_es_random = calculate_transmission_time(model_size, r_client_to_es, A_random)
+    t_client_to_es_random = calculate_transmission_time(model_size, r_client_to_es, A_design)
     t_client_to_es_design = calculate_transmission_time(model_size, r_client_to_es, A_design)
     t_es_to_eh_random = calculate_transmission_time(model_size, r_es, B_random_comm)
     t_es_to_eh_design = calculate_transmission_time(model_size, r_es, B_cluster_comm)
