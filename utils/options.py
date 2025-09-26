@@ -76,7 +76,7 @@ def args_parser():
                        help="number of parallel processes for client training")
 
     # Network topology parameters
-    parser.add_argument('--es_ratio', type=float, default=0.34,
+    parser.add_argument('--es_ratio', type=float, default=0.2,
                        help="ratio of edge servers to total nodes (default: 0.34)")
     parser.add_argument('--graphml_file', type=str, default="graph-example/754Kdl.graphml",
                        help="path to the GraphML network topology file")

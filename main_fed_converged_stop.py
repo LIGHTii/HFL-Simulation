@@ -364,6 +364,7 @@ if __name__ == '__main__':
     print(f"hfl_random 预计单轮通信时间: {t_hfl_random_sig:.6f}s")
     print(f"hfl_design 预计单轮通信时间: {t_hfl_design_sig:.6f}s")
     print(f"sfl 预计单轮通信时间: {t_sfl_sig:.6f}s")
+    '''
     # 生成EH专属测试集
     print("\n--- 生成EH专属测试集 ---")
     print("采用改进的资源分配策略：允许测试样本在多个EH测试集中重复出现")
@@ -1155,3 +1156,4 @@ if __name__ == '__main__':
             print(f"  {model_name}: {row['test_acc']:.2f}%")
     except:
         pass
+'''

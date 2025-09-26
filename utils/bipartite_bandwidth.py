@@ -618,7 +618,7 @@ def build_bipartite_graph(graphml_file="./graph-example/Ulaknet.graphml", es_rat
             else:
                 print(f"Warning: No position for client {c} or edge {e}, setting distance to infinity")
                 distance_matrix[i, j] = float('inf')
-
+    print(f"min dist {np.min(distance_matrix, axis=1)}")
     # 打印节点样例信息
     if client_nodes:
         sample_node = G.nodes[client_nodes[0]]
@@ -859,29 +859,33 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
     # 1. 初始化系统参数
     M = len(client_nodes)      # 客户端数量
     N = len(es_nodes)          # 边缘服务器数量
-    B_cloud = 5e7              # 总云端带宽 (50 MHz)
-    p_m = np.ones(M) * 1.0     # 客户端发射功率 (W)
+    # B_cloud = 5e7              # 总云端带宽 (50 MHz)
+    # p_m = np.ones(M) * 10.0    # 客户端发射功率 (W)
     N0 = 10**(-20.4)           # 噪声功率谱密度 (W/Hz)
-    path_loss_exponent = 3.5   # 路径损耗指数 (alpha)
-    g0_at_1m = 1e-4            # 在参考距离d0=1米处的信道增益
+    path_loss_exponent = 2.0   # 路径损耗指数 (alpha)
+    # g0_at_1m = 1e-4            # 在参考距离d0=1米处的信道增益
+    g0_client_es = 1e-3
+    g0_es_es = 1e-2
+    p_client = np.ones(M) * 20.0  # 客户端发射功率向量 (W)
+    p_es = np.ones(N) * 50.0      # ES发射功率向量 (W)
 
     #=======================STEP 1: 计算client-es传输速率========================#
     print("\n========== 计算客户端到边缘服务器(client-es)传输速率 ==========")
     
     # 设置客户端到边缘服务器的通信参数
-    client_center_bandwidth = 2e7        # 中心带宽 20 MHz
+    client_center_bandwidth =8e7        # 中心带宽 80 MHz
     client_bandwidth_sigma = 0.5         # 带宽对数正态分布的标准差
-    client_bandwidth_range = (1e6, 5e7)  # 带宽范围 1-50 MHz
+    client_bandwidth_range = (5e7, 1e8)  # 带宽范围 50-100 MHz
     
     # 使用通用函数计算传输速率
     r_client_to_es, g, B_mn = calculate_transmission_rates(
         distance_matrix=distance_matrix,
-        transmit_power=p_m,              # 客户端发射功率
+        transmit_power=p_client,              # 客户端发射功率
         center_bandwidth=client_center_bandwidth,
         bandwidth_sigma=client_bandwidth_sigma,
         noise_density=N0,
         path_loss_exponent=path_loss_exponent,
-        g0_at_1m=g0_at_1m,
+        g0_at_1m=g0_client_es,
         bandwidth_range=client_bandwidth_range
     )
 
@@ -943,7 +947,7 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
             else:
                 print(f"警告: 活跃边缘服务器 {e1} 或 {e2} 缺少位置信息，设置距离为无穷大")
                 active_es_distance_matrix[i, j] = float('inf')
-    
+    print(f"min dist {np.min(active_es_distance_matrix, axis=1)}")
     print(f"生成活跃ES距离矩阵，形状: {active_es_distance_matrix.shape}")
     # if N_active > 0:
     #     print(f"活跃ES距离矩阵示例 (前5x5) [米]:\n{active_es_distance_matrix[:min(5, N_active), :min(5, N_active)]}")
@@ -952,10 +956,10 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
     print("\n========== 计算活跃边缘服务器之间的传输速率 ==========")
     
     # 定义ES-to-ES通信的专属参数
-    p_es = np.ones(N) * 5.0            # ES通常有更高的发射功率 (5W)
-    es_center_bandwidth = 1e8          # ES间通常有更高带宽 (100 MHz)
+    # p_es = np.ones(N) * 5.0            # ES通常有更高的发射功率 (5W)
+    es_center_bandwidth = 1e8          # ES间通常有更高带宽 (800 MHz)
     es_bandwidth_sigma = 0.3           # 带宽对数正态分布的标准差
-    es_bandwidth_range = (2e7, 2e8)    # 带宽范围 20-200 MHz
+    es_bandwidth_range = (8e7, 1.2e8)    # 带宽范围 600-1000 MHz
     
     # 使用通用函数计算活跃ES之间的传输速率
     r_es_active, g_es, B_es = calculate_transmission_rates(
@@ -965,7 +969,7 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
         bandwidth_sigma=es_bandwidth_sigma,
         noise_density=N0,
         path_loss_exponent=path_loss_exponent,
-        g0_at_1m=g0_at_1m,
+        g0_at_1m=g0_es_es,
         bandwidth_range=es_bandwidth_range,
         is_diagonal_zero=True,  # 对角线元素置零（自己到自己）
         node_indices=active_es_indices  # 使用活跃ES的索引
@@ -1035,7 +1039,7 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
                 else:
                     print(f"警告: 活跃边缘服务器 {es_node} 缺少位置信息，设置距离为无穷大")
                     active_es_to_cloud_distance[i, 0] = float('inf')
-            
+            print(f"min dist {np.min(active_es_to_cloud_distance, axis=1)}")
             # print(f"活跃ES到云距离矩阵形状: {active_es_to_cloud_distance.shape} (N_active×1)")
         else:
             print("警告: 活跃边缘服务器缺少位置信息，无法计算云服务器位置")
@@ -1063,7 +1067,7 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
             bandwidth_sigma=cloud_bandwidth_sigma,
             noise_density=N0,
             path_loss_exponent=path_loss_exponent,
-            g0_at_1m=g0_at_1m,
+            g0_at_1m=g0_es_es,
             bandwidth_range=cloud_bandwidth_range,
             node_indices=active_es_indices    # 使用活跃ES的索引
         )
@@ -1094,9 +1098,9 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
     r_client_to_cloud = None
     if cloud_pos is not None:
         # 定义客户端到云通信的专属参数
-        cloud_direct_bandwidth = 7e7          # 直连云带宽较低 (80 MHz)
+        cloud_direct_bandwidth = 8e7          # 直连云带宽较低 (80 MHz)
         cloud_direct_sigma = 0.3              # 带宽对数正态分布的标准差
-        cloud_direct_range = (1e7, 2e8)       # 带宽范围 10-200 MHz
+        cloud_direct_range = (5e7, 1e8)       # 带宽范围 10-200 MHz
         
         # 计算每个客户端到云的距离
         client_to_cloud_distance = np.zeros((M, 1))
@@ -1110,16 +1114,16 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
             else:
                 print(f"警告: 客户端 {client_node} 缺少位置信息，设置距离为无穷大")
                 client_to_cloud_distance[idx, 0] = float('inf')
-        
+        print(f"min dist {np.min(client_to_cloud_distance, axis=1)}")
         # 使用通用函数计算客户端到云的传输速率
         r_client_to_cloud, g_client_to_cloud, B_client_to_cloud = calculate_transmission_rates(
             distance_matrix=client_to_cloud_distance,
-            transmit_power=p_m,               # 使用客户端发射功率
+            transmit_power=p_client,               # 使用客户端发射功率
             center_bandwidth=cloud_direct_bandwidth,
             bandwidth_sigma=cloud_direct_sigma,
             noise_density=N0,
             path_loss_exponent=path_loss_exponent,
-            g0_at_1m=g0_at_1m,
+            g0_at_1m=g0_client_es,
             bandwidth_range=cloud_direct_range
         )
         
