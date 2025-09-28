@@ -39,6 +39,7 @@ from models.test import test_img
 from models.Update import LocalUpdate
 from models.ES_cluster import (
     train_initial_models,
+    train_initial_models_with_es_aggregation,
     aggregate_es_models, spectral_clustering_es,
     calculate_es_label_distributions,
     visualize_clustering_comparison
@@ -305,6 +306,47 @@ def get_B_cluster(args, w_locals, A, dict_users, net_glob, client_label_distribu
     )
     return B
 
+def get_B_cluster_from_es_models(args, es_models, A_design, client_label_distributions):
+    """
+    从ES层聚合模型直接生成 ES-EH 关联矩阵 B，并可视化聚类结果
+    
+    Args:
+        args: 参数配置
+        es_models: ES层聚合后的模型列表
+        A_design: 客户端-ES关联矩阵
+        client_label_distributions: 客户端标签分布
+    
+    Returns:
+        B: ES-EH关联矩阵
+    """
+    print("开始从ES模型进行谱聚类生成B矩阵...")
+
+    # 1. 直接使用ES模型进行谱聚类（跳过聚合步骤）
+    B, cluster_labels = spectral_clustering_es(
+        es_models,
+        epsilon=args.epsilon  # 从参数中获取
+    )
+
+    # 2. 计算ES的标签分布并可视化
+    es_label_distributions = calculate_es_label_distributions(A_design, client_label_distributions)
+    
+    # 3. 在完成谱聚类后添加对比可视化
+    visualize_clustering_comparison(
+        es_label_distributions=es_label_distributions,
+        cluster_labels=cluster_labels,
+        save_path='./save/clustering_comparison.png'
+    )
+    
+    print(f"谱聚类完成，生成 {B.shape[1]} 个EH簇")
+    
+    # 4. 打印聚类结果摘要
+    print("[ES-EH聚类分配摘要]:")
+    for cluster_id in range(B.shape[1]):
+        es_in_cluster = [es_idx for es_idx in range(B.shape[0]) if B[es_idx, cluster_id] == 1]
+        print(f"  EH簇 {cluster_id}: 包含ES {es_in_cluster}")
+    
+    return B
+
 # ===== 根据 A、B 构造 C1 和 C2 =====
 def build_hierarchy(A, B):
     num_users, num_ESs = A.shape
@@ -498,14 +540,14 @@ if __name__ == '__main__':
     # 使用谱聚类生成B矩阵（替换原来的随机B矩阵）
     print("开始初始训练和谱聚类...")
 
-    # 1. 训练初始本地模型 - 使用args.num_users确保一致性
-    w_locals, client_label_distributions = train_initial_models(
-        args, dataset_train, dict_users, net_glob, args.num_users
+    # 1. 训练初始本地模型并聚合到ES层 - 遵循联邦学习机制
+    w_locals, client_label_distributions = train_initial_models_with_es_aggregation(
+        args, dataset_train, dict_users, net_glob, A_design, args.num_users
     )
 
-    # 2. 使用谱聚类生成B矩阵
-    B_cluster = get_B_cluster(
-        args, w_locals, A_design, dict_users, net_glob, client_label_distributions
+    # 2. 使用谱聚类生成B矩阵（w_locals现在是ES层聚合结果）
+    B_cluster = get_B_cluster_from_es_models(
+        args, w_locals, A_design, client_label_distributions
     )
     num_EHs = B_cluster.shape[1]
     

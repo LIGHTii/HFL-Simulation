@@ -42,8 +42,6 @@ def args_parser():
                         help="sigma parameter for spectral clustering")
     parser.add_argument('--epsilon', type=float, default=None,
                         help="epsilon threshold for spectral clustering")
-    parser.add_argument('--local_ep_init', type=int, default=1,
-                        help="number of local epochs for initial model training")
     # non-iid partitioning parameters
     parser.add_argument('--partition', type=str, default='noniid-labeldir',
                        help="data partition method: homo, noniid-labeldir, noniid-#label1-9, iid-diff-quantity")

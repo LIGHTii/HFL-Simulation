@@ -2,8 +2,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import copy
+import torch.multiprocessing as mp
+from tqdm import tqdm
 from models.Update import LocalUpdate  # 导入LocalUpdate
 from models.cluster2 import cluster2
+from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, MobileNetCifar, LeNet5
 # ==================================== ES聚类 ========================================
 def model_to_vector(model_params):
     """将模型参数字典转换为向量"""
@@ -313,3 +316,164 @@ def spectral_clustering_es(es_models, epsilon=None):
         print(f"  ES {es_idx} -> EH {label}")
 
     return B, cluster_labels
+
+def train_single_client_for_es(args, user_idx, dataset_train, dict_users, w_input, net_glob):
+    """
+    单个客户端的训练函数，用于ES初始化阶段的多进程训练
+    
+    Args:
+        args: 训练参数
+        user_idx: 客户端索引
+        dataset_train: 训练数据集
+        dict_users: 客户端数据索引字典
+        w_input: 输入模型权重
+        net_glob: 全局模型架构（用于重新构建模型）
+    
+    Returns:
+        tuple: (user_idx, w_local, loss_local)
+    """
+    # 在子进程中重新构建模型架构
+    if hasattr(dataset_train, '__getitem__'):
+        img_size = dataset_train[0][0].shape
+    else:
+        # 如果无法获取，使用默认值
+        if args.dataset == 'mnist':
+            img_size = (1, 28, 28)
+        elif args.dataset in ['cifar', 'cifar100']:
+            img_size = (3, 32, 32)
+        else:
+            img_size = (1, 28, 28)  # 默认值
+
+    if args.model == 'cnn':
+        if args.dataset in ['cifar', 'cifar100']:
+            local_net = CNNCifar(args=args).to(args.device)
+        elif args.dataset == 'mnist':
+            local_net = CNNMnist(args=args).to(args.device)
+    elif args.model == 'mlp':
+        len_in = 1
+        for x in img_size:
+            len_in *= x
+        local_net = MLP(dim_in=len_in, dim_hidden=200, dim_out=args.num_classes).to(args.device)
+    elif args.model == 'lr' and args.dataset == 'mnist':
+        len_in = 1
+        for x in img_size:
+            len_in *= x
+        local_net = LR(dim_in=len_in, dim_out=args.num_classes).to(args.device)
+    elif args.model == 'lenet5' and args.dataset == 'mnist':
+        local_net = LeNet5(args=args).to(args.device)
+    elif args.model == 'vgg11' and args.dataset in ['cifar', 'cifar100']:
+        local_net = VGG11(args=args).to(args.device)
+    elif args.model == 'resnet18' and args.dataset in ['cifar', 'cifar100']:
+        local_net = ResNet18(args=args).to(args.device)
+    else:
+        # 默认使用CNN
+        if args.dataset in ['cifar', 'cifar100']:
+            local_net = CNNCifar(args=args).to(args.device)
+        else:
+            local_net = CNNMnist(args=args).to(args.device)
+    
+    # 创建本地更新实例
+    local = LocalUpdate(
+        args=args,
+        dataset=dataset_train,
+        idxs=dict_users[user_idx]
+    )
+    
+    # 加载输入权重
+    local_net.load_state_dict(w_input)
+    
+    # 训练本地模型
+    w_local, loss_local = local.train(net=local_net.to(args.device))
+    
+    # 返回结果，包括 user_idx 以便后续排序
+    return (user_idx, copy.deepcopy(w_local), loss_local)
+
+def train_initial_models_with_es_aggregation(args, dataset_train, dict_users, net_glob, A_design, num_users):
+    """
+    训练初始本地模型并聚合到ES层，遵循联邦学习机制
+    
+    Args:
+        args: 训练参数
+        dataset_train: 训练数据集
+        dict_users: 客户端数据索引字典
+        net_glob: 全局模型
+        A_design: 客户端-ES关联矩阵
+        num_users: 客户端数量
+    
+    Returns:
+        es_models: ES层聚合后的模型列表
+        client_label_distributions: 客户端标签分布
+    """
+    from models.Fed import FedAvg_layered
+    
+    print("Training initial local models with ES aggregation for clustering...")
+    print(f"每个客户端训练 {args.local_ep} 轮本地更新")
+    print(f"ES层聚合 {args.ES_k2} 轮")
+    
+    # 构建C1层级结构（客户端->ES映射）
+    num_ESs = A_design.shape[1]
+    C1 = {j: [] for j in range(num_ESs)}
+    for i in range(num_users):
+        for j in range(num_ESs):
+            if A_design[i][j] == 1:
+                C1[j].append(i)
+    
+    print(f"客户端-ES映射关系: {dict(C1)}")
+    
+    # 初始化ES层模型权重（从全局模型开始）
+    w_glob = net_glob.state_dict()
+    ESs_ws = [copy.deepcopy(w_glob) for _ in range(num_ESs)]
+    
+    # 计算每个客户端的标签分布
+    client_label_distributions = []
+    for user_idx in range(num_users):
+        labels = [dataset_train[i][1] for i in dict_users[user_idx]]
+        label_count = np.zeros(args.num_classes)
+        for label in labels:
+            label_count[label] += 1
+        client_label_distributions.append(label_count)
+    
+    # ES层聚合k2轮
+    for es_round in range(args.ES_k2):
+        print(f"\n--- ES聚合轮次 {es_round + 1}/{args.ES_k2} ---")
+        
+        # ES层->客户端层权重分发
+        w_locals_input = [None] * num_users
+        for ES_idx, user_indices in C1.items():
+            for user_idx in user_indices:
+                w_locals_input[user_idx] = copy.deepcopy(ESs_ws[ES_idx])
+        
+        # 客户端本地训练 - 使用多进程并行
+        w_locals_output = [None] * num_users
+        
+        # 准备并行训练任务
+        print(f"  开始并行训练 {num_users} 个客户端，使用 5 个进程...")
+        
+        # 准备传递给每个子进程的参数
+        tasks = []
+        for user_idx in range(num_users):
+            task_args = (
+                args, user_idx, dataset_train, dict_users,
+                w_locals_input[user_idx], net_glob
+            )
+            tasks.append(task_args)
+        
+        # 创建进程池并分发任务
+        with mp.Pool(processes=5) as pool:
+            results = pool.starmap(train_single_client_for_es, tqdm(tasks, desc=f"ES聚合轮次 {es_round + 1} 客户端训练"))
+        
+        # 收集并整理所有客户端的训练结果，按user_idx排序
+        for result in results:
+            u_idx, w_local, loss_local = result
+            w_locals_output[u_idx] = w_local
+            
+            if u_idx < 5:  # 只打印前5个客户端的损失
+                print(f"  客户端 {u_idx}: 损失 {loss_local:.4f}")
+        
+        # 客户端->ES层聚合
+        ESs_ws = FedAvg_layered(w_locals_output, C1)
+        print(f"  ES聚合完成，共聚合到 {len([es for es in ESs_ws if es is not None])} 个ES")
+    
+    print(f"\n✅ 初始训练完成！经过 {args.ES_k2} 轮ES聚合，生成 {len(ESs_ws)} 个ES模型用于谱聚类")
+    
+    return ESs_ws, np.array(client_label_distributions)
