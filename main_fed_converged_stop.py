@@ -347,6 +347,40 @@ def get_B_cluster_from_es_models(args, es_models, A_design, client_label_distrib
     
     return B
 
+def get_numlist_from_dict_users(hierarchy_dict, device_data_counts):
+    """
+    计算每个负责设备管理的所有设备的数据量总和
+    
+    Args:
+        hierarchy_dict: 关联字典，格式为 {负责设备idx: [管理设备idx列表]}
+        device_data_counts: 管理设备内部的数据量，格式为 {设备idx: 数据量} 或 [数据量列表]
+    
+    Returns:
+        list: 每个负责设备内部的数据量总和数组
+    """
+    # 如果 device_data_counts 是列表形式，转换为字典
+    if isinstance(device_data_counts, list):
+        device_data_dict = {idx: count for idx, count in enumerate(device_data_counts)}
+    else:
+        device_data_dict = device_data_counts
+    
+    # 初始化结果数组
+    num_supervisors = len(hierarchy_dict)
+    supervisor_data_counts = [0] * num_supervisors
+    
+    # 计算每个负责设备管理的数据量总和
+    for supervisor_idx, managed_devices in hierarchy_dict.items():
+        total_data = 0
+        for device_idx in managed_devices:
+            if device_idx in device_data_dict:
+                total_data += device_data_dict[device_idx]
+            else:
+                print(f"Warning: 设备 {device_idx} 的数据量未找到，跳过")
+        
+        supervisor_data_counts[supervisor_idx] = total_data
+    
+    return supervisor_data_counts
+    
 # ===== 根据 A、B 构造 C1 和 C2 =====
 def build_hierarchy(A, B):
     num_users, num_ESs = A.shape
@@ -571,6 +605,64 @@ if __name__ == '__main__':
     print("C2_random (二级->一级):", C2_random)
     print("C1_cluster (一级->客户端):", C1_cluster)
     print("C2_cluster (二级->一级):", C2_cluster)
+    
+    # 计算每个客户端的数据量
+    client_data_counts = {}
+    for client_id, data_indices in dict_users.items():
+        if isinstance(data_indices, set):
+            client_data_counts[client_id] = len(data_indices)
+        elif isinstance(data_indices, np.ndarray):
+            client_data_counts[client_id] = len(data_indices)
+        else:
+            client_data_counts[client_id] = len(list(data_indices))
+    
+    print(f"\n=== C1、C2关联策略下ES、EH数据量统计 ===")
+    
+    # 计算HFL两层结构下的数据量分布
+    print("\n--- HFL两层结构 (C1_hfl, C2_hfl) ---")
+    es_data_counts_hfl = get_numlist_from_dict_users(C1_hfl, client_data_counts)
+    eh_data_counts_hfl = get_numlist_from_dict_users(C2_hfl, es_data_counts_hfl)
+    print(f"ES数据量列表: {es_data_counts_hfl}")
+    print(f"EH数据量列表: {eh_data_counts_hfl}")
+    print(f"ES平均数据量: {np.mean(es_data_counts_hfl):.1f}, 标准差: {np.std(es_data_counts_hfl):.1f}")
+    print(f"EH平均数据量: {np.mean(eh_data_counts_hfl):.1f}, 标准差: {np.std(eh_data_counts_hfl):.1f}")
+    
+    # 计算随机B矩阵下的数据量分布
+    print("\n--- 随机B矩阵 (C1_random, C2_random) ---")
+    es_data_counts_random = get_numlist_from_dict_users(C1_random, client_data_counts)
+    eh_data_counts_random = get_numlist_from_dict_users(C2_random, es_data_counts_random)
+    print(f"ES数据量列表: {es_data_counts_random}")
+    print(f"EH数据量列表: {eh_data_counts_random}")
+    print(f"ES平均数据量: {np.mean(es_data_counts_random):.1f}, 标准差: {np.std(es_data_counts_random):.1f}")
+    print(f"EH平均数据量: {np.mean(eh_data_counts_random):.1f}, 标准差: {np.std(eh_data_counts_random):.1f}")
+    
+    # 计算聚类B矩阵下的数据量分布
+    print("\n--- 聚类B矩阵 (C1_cluster, C2_cluster) ---")
+    es_data_counts_cluster = get_numlist_from_dict_users(C1_cluster, client_data_counts)
+    eh_data_counts_cluster = get_numlist_from_dict_users(C2_cluster, es_data_counts_cluster)
+    print(f"ES数据量列表: {es_data_counts_cluster}")
+    print(f"EH数据量列表: {eh_data_counts_cluster}")
+    print(f"ES平均数据量: {np.mean(es_data_counts_cluster):.1f}, 标准差: {np.std(es_data_counts_cluster):.1f}")
+    print(f"EH平均数据量: {np.mean(eh_data_counts_cluster):.1f}, 标准差: {np.std(eh_data_counts_cluster):.1f}")
+    
+    # print(f"\n=== 加权平均聚合配置 ===")
+    # print(f"✅ 联邦学习聚合将使用基于数据量的加权平均")
+    # print(f"📊 客户端总数据量: {sum(client_data_counts.values())}")
+    # print(f"📊 客户端数据量分布: 最小={min(client_data_counts.values())}, 最大={max(client_data_counts.values())}, 平均={np.mean(list(client_data_counts.values())):.1f}")
+    # print("=" * 30)
+    
+    # # 数据量分布对比分析
+    # print(f"\n--- 数据量分布对比分析 ---")
+    # print(f"总客户端数据量: {sum(client_data_counts.values())}")
+    # print(f"客户端数据量范围: [{min(client_data_counts.values())}, {max(client_data_counts.values())}]")
+    # print(f"ES数据量分布 - HFL: 范围[{min(es_data_counts_hfl)}, {max(es_data_counts_hfl)}], 变异系数: {np.std(es_data_counts_hfl)/np.mean(es_data_counts_hfl):.3f}")
+    # print(f"ES数据量分布 - 随机: 范围[{min(es_data_counts_random)}, {max(es_data_counts_random)}], 变异系数: {np.std(es_data_counts_random)/np.mean(es_data_counts_random):.3f}")
+    # print(f"ES数据量分布 - 聚类: 范围[{min(es_data_counts_cluster)}, {max(es_data_counts_cluster)}], 变异系数: {np.std(es_data_counts_cluster)/np.mean(es_data_counts_cluster):.3f}")
+    # print(f"EH数据量分布 - HFL: 范围[{min(eh_data_counts_hfl)}, {max(eh_data_counts_hfl)}], 变异系数: {np.std(eh_data_counts_hfl)/np.mean(eh_data_counts_hfl):.3f}")
+    # print(f"EH数据量分布 - 随机: 范围[{min(eh_data_counts_random)}, {max(eh_data_counts_random)}], 变异系数: {np.std(eh_data_counts_random)/np.mean(eh_data_counts_random):.3f}")
+    # print(f"EH数据量分布 - 聚类: 范围[{min(eh_data_counts_cluster)}, {max(eh_data_counts_cluster)}], 变异系数: {np.std(eh_data_counts_cluster)/np.mean(eh_data_counts_cluster):.3f}")
+    # print("=" * 50)
+    
     print("t_client_to_es_random")
     t_client_to_es_random, p_client_to_es_random = calculate_transmission_time(model_size, r_client_to_es, A_design, p_client)
     t_client_to_es_design, p_client_to_es_design = calculate_transmission_time(model_size, r_client_to_es, A_design, p_client)
@@ -888,20 +980,23 @@ if __name__ == '__main__':
 
                 # --- HFL 聚合 (Client -> ES) - 只对未收敛的机制进行聚合 ---
                 if not converged_hfl_random:
-                    ESs_ws_input_hfl_random = FedAvg_layered(w_locals_output_hfl_random, C1_random)
+                    #print(f"  📊 [Client->ES] HFL随机: 使用加权平均聚合 (基于{len(client_data_counts)}个客户端数据量)")
+                    ESs_ws_input_hfl_random = FedAvg_layered(w_locals_output_hfl_random, C1_random, client_data_counts)
                     t_hfl_random += t_client_to_es_random
                 else:
                     print(f"  [Skip] HFL随机B矩阵已收敛，跳过ES层聚合")
                 
                 if not converged_hfl_cluster:
-                    ESs_ws_input_hfl_cluster = FedAvg_layered(w_locals_output_hfl_cluster, C1_cluster)
+                    #print(f"  📊 [Client->ES] HFL聚类: 使用加权平均聚合 (基于{len(client_data_counts)}个客户端数据量)")
+                    ESs_ws_input_hfl_cluster = FedAvg_layered(w_locals_output_hfl_cluster, C1_cluster, client_data_counts)
                     t_hfl_design += t_client_to_es_design
                 else:
                     print(f"  [Skip] HFL聚类B矩阵已收敛，跳过ES层聚合")
                 
                 # --- HFL两层结构聚合 (Client -> ES) - 与其他机制同步进行ES层聚合 ---
                 if not converged_hfl:
-                    ESs_ws_hfl = FedAvg_layered(w_locals_output_hfl, C1_hfl)
+                    #print(f"  📊 [Client->ES] HFL两层: 使用加权平均聚合 (基于{len(client_data_counts)}个客户端数据量)")
+                    ESs_ws_hfl = FedAvg_layered(w_locals_output_hfl, C1_hfl, client_data_counts)
                     t_hfl += t_client_to_es_favg
                 else:
                     print(f"  [Skip] HFL两层结构已收敛，跳过ES层聚合")
@@ -951,13 +1046,19 @@ if __name__ == '__main__':
 
             # HFL 聚合 (ES -> EH) - 只对未收敛的机制进行聚合
             if not converged_hfl_random:
-                EHs_ws_hfl_random = FedAvg_layered(ESs_ws_input_hfl_random, C2_random)
+                # 将ES数据量列表转换为字典格式
+                es_data_weights_random = {i: es_data_counts_random[i] for i in range(len(es_data_counts_random))}
+                #print(f"    📊 [ES->EH] HFL随机: 使用加权平均聚合 (基于{len(es_data_weights_random)}个ES数据量)")
+                EHs_ws_hfl_random = FedAvg_layered(ESs_ws_input_hfl_random, C2_random, es_data_weights_random)
                 t_hfl_random += t_es_to_eh_random
             else:
                 print(f"  [Skip] HFL随机B矩阵已收敛，跳过EH层聚合")
             
             if not converged_hfl_cluster:
-                EHs_ws_hfl_cluster = FedAvg_layered(ESs_ws_input_hfl_cluster, C2_cluster)
+                # 将ES数据量列表转换为字典格式
+                es_data_weights_cluster = {i: es_data_counts_cluster[i] for i in range(len(es_data_counts_cluster))}
+                #print(f"    📊 [ES->EH] HFL聚类: 使用加权平均聚合 (基于{len(es_data_weights_cluster)}个ES数据量)")
+                EHs_ws_hfl_cluster = FedAvg_layered(ESs_ws_input_hfl_cluster, C2_cluster, es_data_weights_cluster)
                 t_hfl_design += t_es_to_eh_design
             else:
                 print(f"  [Skip] HFL聚类B矩阵已收敛，跳过EH层聚合")
@@ -965,7 +1066,8 @@ if __name__ == '__main__':
             # --- HFL两层结构全局聚合 (ES -> Cloud) - 在EH聚合时机进行ES到Cloud的上传 ---
             if not converged_hfl:
                 # HFL两层结构：ES聚合结果直接上传到Cloud（跳过EH层）
-                w_glob_hfl = FedAvg(ESs_ws_hfl)
+                # print(f"    📊 [ES->Cloud] HFL两层: 使用加权平均聚合 (基于{len(es_data_counts_hfl)}个ES数据量)")
+                w_glob_hfl = FedAvg(ESs_ws_hfl, es_data_counts_hfl)
                 net_glob_hfl.load_state_dict(w_glob_hfl)
                 t_hfl += t_es_to_cloud_favg
             else:
@@ -1139,14 +1241,16 @@ if __name__ == '__main__':
 
         # HFL 全局聚合 (EH -> Cloud) - 只对未收敛的机制进行聚合
         if not converged_hfl_random:
-            w_glob_hfl_random = FedAvg(EHs_ws_hfl_random)
+            # print(f"  📊 [EH->Cloud] HFL随机: 使用加权平均聚合 (基于{len(eh_data_counts_random)}个EH数据量)")
+            w_glob_hfl_random = FedAvg(EHs_ws_hfl_random, eh_data_counts_random)
             net_glob_hfl_random.load_state_dict(w_glob_hfl_random)
             t_hfl_random += t_eh_to_cloud_random
         else:
             print(f"  [Skip] HFL随机B矩阵已收敛，跳过全局聚合")
         
         if not converged_hfl_cluster:
-            w_glob_hfl_cluster = FedAvg(EHs_ws_hfl_cluster)
+            # print(f"  📊 [EH->Cloud] HFL聚类: 使用加权平均聚合 (基于{len(eh_data_counts_cluster)}个EH数据量)")
+            w_glob_hfl_cluster = FedAvg(EHs_ws_hfl_cluster, eh_data_counts_cluster)
             net_glob_hfl_cluster.load_state_dict(w_glob_hfl_cluster)
             t_hfl_design += t_eh_to_cloud_design
         else:

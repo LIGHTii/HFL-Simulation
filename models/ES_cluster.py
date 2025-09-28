@@ -409,6 +409,7 @@ def train_initial_models_with_es_aggregation(args, dataset_train, dict_users, ne
     print("Training initial local models with ES aggregation for clustering...")
     print(f"每个客户端训练 {args.local_ep} 轮本地更新")
     print(f"ES层聚合 {args.ES_k2} 轮")
+    print("📊 ES层聚合将使用基于数据量的加权平均")
     
     # 构建C1层级结构（客户端->ES映射）
     num_ESs = A_design.shape[1]
@@ -419,6 +420,19 @@ def train_initial_models_with_es_aggregation(args, dataset_train, dict_users, ne
                 C1[j].append(i)
     
     print(f"客户端-ES映射关系: {dict(C1)}")
+    
+    # 计算每个客户端的数据量
+    client_data_counts = {}
+    for client_id, data_indices in dict_users.items():
+        if isinstance(data_indices, set):
+            client_data_counts[client_id] = len(data_indices)
+        elif isinstance(data_indices, np.ndarray):
+            client_data_counts[client_id] = len(data_indices)
+        else:
+            client_data_counts[client_id] = len(list(data_indices))
+    
+    print(f"📊 客户端数据量统计: 总数={sum(client_data_counts.values())}, 平均={np.mean(list(client_data_counts.values())):.1f}")
+    print(f"📊 数据量范围: [{min(client_data_counts.values())}, {max(client_data_counts.values())}]")
     
     # 初始化ES层模型权重（从全局模型开始）
     w_glob = net_glob.state_dict()
@@ -470,10 +484,12 @@ def train_initial_models_with_es_aggregation(args, dataset_train, dict_users, ne
             if u_idx < 5:  # 只打印前5个客户端的损失
                 print(f"  客户端 {u_idx}: 损失 {loss_local:.4f}")
         
-        # 客户端->ES层聚合
-        ESs_ws = FedAvg_layered(w_locals_output, C1)
+        # 客户端->ES层聚合 - 使用加权平均
+        print(f"  📊 开始ES层加权平均聚合 (基于{len(client_data_counts)}个客户端数据量)")
+        ESs_ws = FedAvg_layered(w_locals_output, C1, client_data_counts)
         print(f"  ES聚合完成，共聚合到 {len([es for es in ESs_ws if es is not None])} 个ES")
     
-    print(f"\n✅ 初始训练完成！经过 {args.ES_k2} 轮ES聚合，生成 {len(ESs_ws)} 个ES模型用于谱聚类")
+    print(f"\n✅ 初始训练完成！经过 {args.ES_k2} 轮ES加权聚合，生成 {len(ESs_ws)} 个ES模型用于谱聚类")
+    print("📊 所有ES聚合均已使用基于数据量的加权平均，确保训练质量")
     
     return ESs_ws, np.array(client_label_distributions)
