@@ -104,7 +104,7 @@ def args_parser():
     parser.add_argument('--min_delta', type=float, default=0.005, help='Min delta for early stopping')
     
     # Convergence threshold parameters
-    parser.add_argument('--loss_threshold', type=float, default=0.1, 
+    parser.add_argument('--loss_threshold', type=float, default=0.12, 
                        help='Loss threshold for convergence (default: 0.1)')
     parser.add_argument('--acc_threshold', type=float, default=95.0, 
                        help='Accuracy threshold for convergence in percentage (default: 95.0)')
