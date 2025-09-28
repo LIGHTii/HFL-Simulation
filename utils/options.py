@@ -108,7 +108,7 @@ def args_parser():
                        help='Loss threshold for convergence (default: 0.1)')
     parser.add_argument('--acc_threshold', type=float, default=95.0, 
                        help='Accuracy threshold for convergence in percentage (default: 95.0)')
-    parser.add_argument('--convergence_patience', type=int, default=3, 
+    parser.add_argument('--convergence_patience', type=int, default=2,
                        help='Number of consecutive epochs to maintain thresholds for convergence (default: 3)')
 
     args = parser.parse_args()
