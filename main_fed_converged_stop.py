@@ -693,18 +693,32 @@ if __name__ == '__main__':
 
     # --- 初始化收敛检查器 ---
     print("\n=== 初始化收敛检查器 ===")
+    print(f"收敛参数设置: 损失阈值={args.loss_threshold}, 准确率阈值={args.acc_threshold}%, 耐心值={args.convergence_patience}")
+    
     # 为每个EH创建收敛检查器 - HFL随机B矩阵
     eh_checkers_random = {}
     for eh_idx in range(num_EHs):
-        eh_checkers_random[eh_idx] = ConvergenceChecker(patience = args.EH_k3)
+        eh_checkers_random[eh_idx] = ConvergenceChecker(
+            patience=args.convergence_patience, 
+            loss_threshold=args.loss_threshold, 
+            acc_threshold=args.acc_threshold
+        )
     
     # 为每个EH创建收敛检查器 - HFL聚类B矩阵  
     eh_checkers_cluster = {}
     for eh_idx in range(num_EHs):
-        eh_checkers_cluster[eh_idx] = ConvergenceChecker(patience = args.EH_k3)
+        eh_checkers_cluster[eh_idx] = ConvergenceChecker(
+            patience=args.convergence_patience, 
+            loss_threshold=args.loss_threshold, 
+            acc_threshold=args.acc_threshold
+        )
     
     # 为HFL两层结构创建收敛检查器
-    hfl_checker = ConvergenceChecker(patience = args.EH_k3)
+    hfl_checker = ConvergenceChecker(
+        patience=args.convergence_patience, 
+        loss_threshold=args.loss_threshold, 
+        acc_threshold=args.acc_threshold
+    )
 
     # 记录各机制的收敛状态
     converged_hfl_random = False

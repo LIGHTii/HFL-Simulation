@@ -104,6 +104,14 @@ def args_parser():
     parser.add_argument('--early_stopping', action='store_true', help='Enable early stopping')
     parser.add_argument('--patience', type=int, default=3, help='Patience for early stopping')
     parser.add_argument('--min_delta', type=float, default=0.005, help='Min delta for early stopping')
+    
+    # Convergence threshold parameters
+    parser.add_argument('--loss_threshold', type=float, default=0.1, 
+                       help='Loss threshold for convergence (default: 0.1)')
+    parser.add_argument('--acc_threshold', type=float, default=95.0, 
+                       help='Accuracy threshold for convergence in percentage (default: 95.0)')
+    parser.add_argument('--convergence_patience', type=int, default=3, 
+                       help='Number of consecutive epochs to maintain thresholds for convergence (default: 3)')
 
     args = parser.parse_args()
     # 动态设置num_classes和num_channels
