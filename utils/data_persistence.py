@@ -30,7 +30,15 @@ def generate_data_config_hash(args):
         'beta': getattr(args, 'beta', 0.1),
         'iid': getattr(args, 'iid', False),
         'use_sampling': getattr(args, 'use_sampling', False),
-        'seed': args.seed
+        'seed': args.seed,
+        # 新增影响客户端数量的网络拓扑参数
+        'graphml_file': getattr(args, 'graphml_file', None),
+        'es_ratio': getattr(args, 'es_ratio', None),
+        'max_capacity': getattr(args, 'max_capacity', None),
+        # 新增其他可能影响数据划分的参数
+        'data_path': getattr(args, 'data_path', './data/'),
+        'local_ep': getattr(args, 'local_ep', 5),
+        'method': getattr(args, 'method', 'fedavg')
     }
     
     # 将字典转换为排序的字符串

@@ -46,6 +46,96 @@ from models.ES_cluster import (
 from utils.conver_check import ConvergenceChecker
 import numpy as np
 
+def validate_data_distribution(dict_users, dataset_train, args):
+    """
+    验证客户端数据分配的完整性和正确性
+    
+    Args:
+        dict_users: 客户端数据索引分配字典
+        dataset_train: 训练数据集
+        args: 参数对象
+    
+    Returns:
+        bool: 验证是否通过
+    """
+    print(f"\n=== 详细数据分配验证 ===")
+    
+    # 1. 检查客户端数量
+    if len(dict_users) != args.num_users:
+        print(f"❌ 客户端数量不匹配: 期望{args.num_users}, 实际{len(dict_users)}")
+        return False
+    
+    # 2. 检查客户端ID的连续性
+    expected_ids = set(range(args.num_users))
+    actual_ids = set(dict_users.keys())
+    if expected_ids != actual_ids:
+        missing_ids = expected_ids - actual_ids
+        extra_ids = actual_ids - expected_ids
+        print(f"❌ 客户端ID不连续:")
+        if missing_ids:
+            print(f"   缺失ID: {missing_ids}")
+        if extra_ids:
+            print(f"   多余ID: {extra_ids}")
+        return False
+    
+    # 3. 检查数据索引的有效性和统计信息
+    total_assigned_samples = 0
+    empty_clients = []
+    invalid_indices_clients = []
+    
+    for client_id, data_indices in dict_users.items():
+        # 转换为列表以便统一处理
+        if isinstance(data_indices, set):
+            data_indices = list(data_indices)
+        elif isinstance(data_indices, np.ndarray):
+            data_indices = data_indices.tolist()
+        
+        # 检查是否为空
+        if len(data_indices) == 0:
+            empty_clients.append(client_id)
+            continue
+        
+        # 检查索引有效性
+        max_index = max(data_indices)
+        min_index = min(data_indices)
+        
+        if max_index >= len(dataset_train) or min_index < 0:
+            invalid_indices_clients.append({
+                'client_id': client_id,
+                'max_index': max_index,
+                'min_index': min_index,
+                'dataset_size': len(dataset_train)
+            })
+        
+        total_assigned_samples += len(data_indices)
+    
+    # 报告问题
+    if empty_clients:
+        print(f"⚠️  发现空客户端: {empty_clients}")
+    
+    if invalid_indices_clients:
+        print(f"❌ 发现无效数据索引的客户端:")
+        for client_info in invalid_indices_clients:
+            print(f"   客户端{client_info['client_id']}: 索引范围[{client_info['min_index']}, {client_info['max_index']}], 数据集大小{client_info['dataset_size']}")
+        return False
+    
+    # 4. 统计信息
+    sample_counts = [len(dict_users[i]) if isinstance(dict_users[i], (list, set)) else len(dict_users[i].tolist()) 
+                     for i in range(args.num_users)]
+    
+    print(f"✅ 数据分配验证通过:")
+    print(f"   总客户端数: {len(dict_users)}")
+    print(f"   总分配样本数: {total_assigned_samples}")
+    print(f"   数据集总大小: {len(dataset_train)}")
+    print(f"   平均每客户端样本数: {total_assigned_samples/len(dict_users):.1f}")
+    print(f"   样本数范围: [{min(sample_counts)}, {max(sample_counts)}]")
+    
+    if empty_clients:
+        print(f"   空客户端数: {len(empty_clients)}")
+    
+    print("=" * 30)
+    return True
+
 def save_communication_results_to_csv(network_scale, hfl_cluster_time, hfl_random_time, sfl_time,
                                     hfl_cluster_power, hfl_random_power, sfl_power, 
                                     dataset, model, lr=None):
@@ -343,6 +433,10 @@ if __name__ == '__main__':
 
     # 现在使用更新后的参数生成数据分配
     dataset_train, dataset_test, dict_users, client_classes = get_data(args)
+    
+    # 验证数据分配的完整性
+    if not validate_data_distribution(dict_users, dataset_train, args):
+        exit("数据分配验证失败，程序退出")
 
     # 打印 FedRS 配置信息
     if args.method == 'fedrs':
@@ -387,14 +481,26 @@ if __name__ == '__main__':
     k3 = args.EH_k3
     num_processes = args.num_processes
 
+    # # 数据一致性已在get_data()后通过validate_data_distribution()验证完成
+    # # 此处只需确认网络拓扑与数据分配的一致性
+    # print(f"\n=== 网络拓扑与数据分配一致性确认 ===")
+    # if args.num_users != num_users:
+    #     print(f"❌ 客户端数量不匹配: args.num_users={args.num_users}, actual_clients={num_users}")
+    #     exit("网络拓扑分析后客户端数量发生变化，请检查配置")
+    
+    # print(f"✅ 网络拓扑与数据分配一致性确认通过")
+    print(f"   客户端数量: {args.num_users}")
+    print(f"   边缘服务器数量: {num_ESs}")
+    print("=" * 30)
+
     # A_random = get_A_random(num_users, num_ESs)
 
     # 使用谱聚类生成B矩阵（替换原来的随机B矩阵）
     print("开始初始训练和谱聚类...")
 
-    # 1. 训练初始本地模型
+    # 1. 训练初始本地模型 - 使用args.num_users确保一致性
     w_locals, client_label_distributions = train_initial_models(
-        args, dataset_train, dict_users, net_glob, num_users
+        args, dataset_train, dict_users, net_glob, args.num_users
     )
 
     # 2. 使用谱聚类生成B矩阵
@@ -1277,4 +1383,3 @@ if __name__ == '__main__':
             print(f"  {model_name}: {row['test_acc']:.2f}%")
     except:
         pass
-'''
