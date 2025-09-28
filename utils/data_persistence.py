@@ -157,6 +157,21 @@ def load_client_data_distribution(filepath, args, verify_config=True):
         print(f"   分区方法: {saved_config['partition']}")
         print(f"   保存时间: {saved_config.get('save_timestamp', 'Unknown')}")
         
+        # 自动使用保存数据时的随机种子，确保实验一致性
+        if 'seed' in saved_config and saved_config['seed'] != args.seed:
+            old_seed = args.seed
+            args.seed = saved_config['seed']
+            print(f"🔄 自动更新随机种子: {old_seed} -> {args.seed} (使用保存数据时的种子)")
+            
+            # 立即设置随机种子
+            import torch
+            import numpy as np
+            import random
+            torch.manual_seed(args.seed)
+            np.random.seed(args.seed)
+            random.seed(args.seed)
+            print(f"   已设置所有随机种子为: {args.seed}")
+        
         # 验证配置一致性
         if verify_config:
             current_hash = generate_data_config_hash(args)
@@ -167,25 +182,32 @@ def load_client_data_distribution(filepath, args, verify_config=True):
                 print(f"   当前配置哈希: {current_hash}")
                 print(f"   保存的配置哈希: {saved_hash}")
                 
-                # 显示具体差异
-                current_config = {
-                    'dataset': args.dataset,
-                    'num_users': args.num_users,
-                    'partition': getattr(args, 'partition', 'noniid-labeldir'),
-                    'beta': getattr(args, 'beta', 0.1),
-                    'iid': getattr(args, 'iid', False),
-                    'use_sampling': getattr(args, 'use_sampling', False),
-                    'seed': args.seed
-                }
+                # 重新计算哈希（因为种子可能已经自动更新）
+                updated_hash = generate_data_config_hash(args)
                 
-                print("\n   配置差异:")
-                for key in current_config:
-                    if key in saved_config and current_config[key] != saved_config[key]:
-                        print(f"   - {key}: 当前={current_config[key]}, 保存={saved_config[key]}")
-                
-                response = input("\n   是否继续使用不一致的配置? (y/N): ")
-                if response.lower() != 'y':
-                    return None, None
+                if updated_hash != saved_hash:
+                    # 显示具体差异
+                    current_config = {
+                        'dataset': args.dataset,
+                        'num_users': args.num_users,
+                        'partition': getattr(args, 'partition', 'noniid-labeldir'),
+                        'beta': getattr(args, 'beta', 0.1),
+                        'iid': getattr(args, 'iid', False),
+                        'use_sampling': getattr(args, 'use_sampling', False),
+                        'seed': args.seed
+                    }
+                    
+                    print(f"   更新后配置哈希: {updated_hash}")
+                    print("\n   配置差异:")
+                    for key in current_config:
+                        if key in saved_config and current_config[key] != saved_config[key]:
+                            print(f"   - {key}: 当前={current_config[key]}, 保存={saved_config[key]}")
+                    
+                    response = input("\n   是否继续使用不一致的配置? (y/N): ")
+                    if response.lower() != 'y':
+                        return None, None
+                else:
+                    print("✅ 配置验证通过（种子已自动同步）")
         
         # 显示数据统计信息
         if 'metadata' in save_data:
