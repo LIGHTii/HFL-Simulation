@@ -85,7 +85,7 @@ def visualize_clustering_comparison(es_label_distributions, cluster_labels,
 
     plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
-    print(f"聚类对比可视化已保存到: {save_path}")
+    print(f"Clustering comparison visualization saved to: {save_path}")
 
 
 def _plot_gradient_clustering_result(ax, distributions, labels, title, class_colors, n_classes):

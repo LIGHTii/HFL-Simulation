@@ -5,7 +5,14 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, Subset
+import matplotlib
 import matplotlib.pyplot as plt
+
+# 设置matplotlib使用英文字体，避免中文字体警告
+matplotlib.rcParams.update({
+    'font.family': 'DejaVu Sans',
+    'axes.unicode_minus': False
+})
 
 class EHTestsetGenerator:
     """生成EH专属测试集的工具类"""
@@ -304,9 +311,9 @@ class EHTestsetGenerator:
                 if np.sum(expected_dist) > 0:
                     expected_dist = expected_dist / np.sum(expected_dist)
                 ax1.bar(x_range, expected_dist, alpha=0.7, color='skyblue')
-                ax1.set_title(f'EH {eh_idx} 期望分布\n(基于下游客户端)')
-                ax1.set_xlabel('类别')
-                ax1.set_ylabel('比例')
+                ax1.set_title(f'EH {eh_idx} Expected Distribution\n(Based on Downstream Clients)')
+                ax1.set_xlabel('Class')
+                ax1.set_ylabel('Proportion')
                 ax1.set_xticks(range(num_classes))
                 ax1.set_ylim(0, max(0.1, np.max(expected_dist) * 1.1))
                 
@@ -314,9 +321,9 @@ class EHTestsetGenerator:
                 ax2 = axes[i, 1]
                 actual_dist = eh_test_distributions[eh_idx]
                 ax2.bar(x_range, actual_dist, alpha=0.7, color='lightcoral')
-                ax2.set_title(f'EH {eh_idx} 实际测试分布\n(样本数: {len(eh_testsets[eh_idx])})')
-                ax2.set_xlabel('类别')
-                ax2.set_ylabel('比例')
+                ax2.set_title(f'EH {eh_idx} Actual Test Distribution\n(Sample Size: {len(eh_testsets[eh_idx])})')
+                ax2.set_xlabel('Class')
+                ax2.set_ylabel('Proportion')
                 ax2.set_xticks(range(num_classes))
                 ax2.set_ylim(0, max(0.1, np.max(actual_dist) * 1.1))
                 
@@ -325,11 +332,11 @@ class EHTestsetGenerator:
                 width = 0.35
                 x_pos1 = x_range - width/2
                 x_pos2 = x_range + width/2
-                ax3.bar(x_pos1, expected_dist, width, label='期望分布', alpha=0.7, color='skyblue')
-                ax3.bar(x_pos2, actual_dist, width, label='实际分布', alpha=0.7, color='lightcoral')
-                ax3.set_title(f'EH {eh_idx} 分布对比')
-                ax3.set_xlabel('类别')
-                ax3.set_ylabel('比例')
+                ax3.bar(x_pos1, expected_dist, width, label='Expected', alpha=0.7, color='skyblue')
+                ax3.bar(x_pos2, actual_dist, width, label='Actual', alpha=0.7, color='lightcoral')
+                ax3.set_title(f'EH {eh_idx} Distribution Comparison')
+                ax3.set_xlabel('Class')
+                ax3.set_ylabel('Proportion')
                 ax3.set_xticks(range(num_classes))
                 ax3.legend()
                 
@@ -339,7 +346,7 @@ class EHTestsetGenerator:
                     cosine_sim = np.dot(expected_dist, actual_dist) / (
                         np.linalg.norm(expected_dist) * np.linalg.norm(actual_dist) + 1e-10
                     )
-                    ax3.text(0.02, 0.98, f'余弦相似度: {cosine_sim:.3f}', 
+                    ax3.text(0.02, 0.98, f'Cosine Similarity: {cosine_sim:.3f}', 
                             transform=ax3.transAxes, verticalalignment='top',
                             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
             
