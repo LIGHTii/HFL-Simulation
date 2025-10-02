@@ -2,8 +2,10 @@ import random
 import math
 import networkx as nx
 import numpy as np
+import pulp
+# import numpy as np
 # import cupy as cp
-from scipy.optimize import linear_sum_assignment
+# from scipy.optimize import linear_sum_assignment
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 from utils.options import args_parser
@@ -291,37 +293,37 @@ def visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, save_path
         plt.annotate('Cloud', (cloud_pos[0], cloud_pos[1]), xytext=(5, 5),
                    textcoords='offset points', fontsize=10, fontweight='bold', color='#d83a3a')
     
-    # 如果提供了筛选信息，绘制筛选范围圆圈
-    if filter_info is not None and 'center' in filter_info and 'radius' in filter_info:
-        center_lat, center_lon = filter_info['center']
-        radius_km = filter_info['radius']
-        
-        # 绘制筛选中心点
-        plt.scatter([center_lon], [center_lat], 
-                   c='#ff6b6b', marker='x', s=200, linewidths=3,
-                   label=f'Filter Center', zorder=5)
-        plt.annotate(f'Filter Center\n({center_lat:.3f}, {center_lon:.3f})', 
-                   (center_lon, center_lat), xytext=(10, 10),
-                   textcoords='offset points', fontsize=8, fontweight='bold', 
-                   color='#ff6b6b', zorder=5)
-        
-        # 计算在经纬度坐标系下的近似半径（简化计算）
-        # 1度纬度约等于111km，经度则取决于纬度
-        lat_radius = radius_km / 111.0  # 纬度半径
-        lon_radius = radius_km / (111.0 * np.cos(np.radians(center_lat)))  # 经度半径
-        
-        # 绘制筛选范围圆圈
-        circle = plt.Circle((center_lon, center_lat), max(lat_radius, lon_radius), 
-                          fill=False, color='#ff6b6b', linewidth=2, linestyle='--', 
-                          alpha=0.7, zorder=1)
-        plt.gca().add_patch(circle)
-        
-        # 使用椭圆更准确地表示地理范围（考虑经纬度差异）
-        from matplotlib.patches import Ellipse
-        ellipse = Ellipse((center_lon, center_lat), 2*lon_radius, 2*lat_radius, 
-                         fill=False, color='#ff6b6b', linewidth=2, linestyle=':', 
-                         alpha=0.5, zorder=1)
-        plt.gca().add_patch(ellipse)
+    # # 如果提供了筛选信息，绘制筛选范围圆圈
+    # if filter_info is not None and 'center' in filter_info and 'radius' in filter_info:
+    #     center_lat, center_lon = filter_info['center']
+    #     radius_km = filter_info['radius']
+    #
+    #     # 绘制筛选中心点
+    #     plt.scatter([center_lon], [center_lat],
+    #                c='#ff6b6b', marker='x', s=200, linewidths=3,
+    #                label=f'Filter Center', zorder=5)
+    #     plt.annotate(f'Filter Center\n({center_lat:.3f}, {center_lon:.3f})',
+    #                (center_lon, center_lat), xytext=(10, 10),
+    #                textcoords='offset points', fontsize=8, fontweight='bold',
+    #                color='#ff6b6b', zorder=5)
+    #
+    #     # 计算在经纬度坐标系下的近似半径（简化计算）
+    #     # 1度纬度约等于111km，经度则取决于纬度
+    #     lat_radius = radius_km / 111.0  # 纬度半径
+    #     lon_radius = radius_km / (111.0 * np.cos(np.radians(center_lat)))  # 经度半径
+    #
+    #     # 绘制筛选范围圆圈
+    #     circle = plt.Circle((center_lon, center_lat), max(lat_radius, lon_radius),
+    #                       fill=False, color='#ff6b6b', linewidth=2, linestyle='--',
+    #                       alpha=0.7, zorder=1)
+    #     plt.gca().add_patch(circle)
+    #
+    #     # 使用椭圆更准确地表示地理范围（考虑经纬度差异）
+    #     from matplotlib.patches import Ellipse
+    #     ellipse = Ellipse((center_lon, center_lat), 2*lon_radius, 2*lat_radius,
+    #                      fill=False, color='#ff6b6b', linewidth=2, linestyle=':',
+    #                      alpha=0.5, zorder=1)
+    #     plt.gca().add_patch(ellipse)
     
     plt.xlabel('Longitude')
     plt.ylabel('Latitude')
@@ -370,8 +372,10 @@ def visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, save_path
     
     return viz_filename
 
-
 def calculate_distance(lat1, lon1, lat2, lon2):
+    '''
+    根据经纬度计算距离
+    '''
     lat1_rad = math.radians(lat1)
     lon1_rad = math.radians(lon1)
     lat2_rad = math.radians(lat2)
@@ -485,7 +489,9 @@ def filter_nodes_by_geographic_range(G, node_ids, pos, filter_radius_ratio=0.3,
     center_point = (center_lat, center_lon)
     return G_filtered, filtered_node_ids, filtered_pos, center_point
 
-def build_bipartite_graph(graphml_file="./graph-example/Ulaknet.graphml", es_ratio=None, visualize=True):
+
+
+def build_bipartite_graph(graphml_file, es_ratio=None, visualize=True):
     """
     从GraphML文件构建客户端-边缘服务器二部图网络拓扑
     
@@ -686,6 +692,94 @@ import pulp
 import numpy as np
 import math
 
+
+def create_association_based_on_rate(rate_matrix, load_deviation_threshold=1):
+    """
+    基于ILP为客户端选择边缘服务器。
+
+    主要目标: 在满足负载均衡约束的前提下，最大化最小传输速率。
+    约束:    所有被使用的边缘服务器之间的负载差不能超过 'load_deviation_threshold'。
+
+    Args:
+        rate_matrix (np.ndarray): 传输速率矩阵 (M, N)。
+        load_deviation_threshold (int): 允许的工作服务器之间的最大负载差。
+    
+    Returns:
+        tuple: (分配列表, 关联矩阵) 或 (None, None) 如果无解。
+    """
+    M, N = rate_matrix.shape
+    
+    # 1. 创建问题实例
+    prob = pulp.LpProblem("Maximize_Min_Rate_With_Load_Constraint", pulp.LpMaximize)
+    
+    # 2. 定义决策变量
+    # x[m][n]: 客户端m -> 服务器n 的关联关系
+    x = pulp.LpVariable.dicts("x", (range(M), range(N)), cat='Binary')
+    
+    # y[n]: 服务器n是否被使用 (负载 > 0)
+    y = pulp.LpVariable.dicts("y", range(N), cat='Binary')
+    
+    # L[n]: 服务器n的负载
+    L = pulp.LpVariable.dicts("L", range(N), lowBound=0, cat='Integer')
+    
+    # R_min: 最小传输速率
+    R_min = pulp.LpVariable("R_min", lowBound=0, cat='Continuous')
+
+    # 3. 设置目标函数
+    prob += R_min, "Objective_Maximize_R_min"
+    
+    # 4. 添加约束
+    # 约束1: 每个客户端只能关联到一个服务器
+    for m in range(M):
+        prob += pulp.lpSum(x[m][n] for n in range(N)) == 1, f"Client_Assignment_{m}"
+
+    # 约束2: 定义R_min
+    for m in range(M):
+        prob += pulp.lpSum(x[m][n] * rate_matrix[m, n] for n in range(N)) >= R_min, f"Min_Rate_Constraint_{m}"
+
+    # 约束3: 计算每个服务器的负载 L[n]
+    for n in range(N):
+        prob += pulp.lpSum(x[m][n] for m in range(M)) == L[n], f"Load_Calculation_{n}"
+        
+    # 约束4: 关联服务器激活状态 y[n] 和负载 L[n]
+    for n in range(N):
+        # 如果L[n] > 0, y[n]必须为1 (Big-M formulation)
+        prob += L[n] <= M * y[n], f"Activate_Server_If_Loaded_{n}"
+        # 如果y[n]为1, L[n]必须>=1
+        prob += L[n] >= y[n], f"Load_If_Active_{n}"
+
+    # 约束5: 核心约束 - 任意两个*激活的*服务器之间的负载偏差
+    # 使用 Big-M 方法，仅当y[n]和y[k]都为1时，约束才生效
+    for n in range(N):
+        for k in range(n + 1, N):
+            # L[n] - L[k] <= threshold, if y[n]=1 and y[k]=1
+            prob += L[n] - L[k] <= load_deviation_threshold + M * (2 - y[n] - y[k]), f"Load_Dev_{n}_{k}"
+            # L[k] - L[n] <= threshold, if y[n]=1 and y[k]=1
+            prob += L[k] - L[n] <= load_deviation_threshold + M * (2 - y[n] - y[k]), f"Load_Dev_{k}_{n}"
+
+    # 求解问题
+    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+
+    if pulp.LpStatus[prob.status] != 'Optimal':
+        print(f"警告: 未能找到最优解。状态: {pulp.LpStatus[prob.status]}")
+        print("这可能是因为负载偏差约束过于严格，导致问题无解。请尝试放宽 'load_deviation_threshold'。")
+        return None, None
+    
+    optimal_R_min = pulp.value(R_min)
+    print(f"求解完成: 在负载偏差不超过 {load_deviation_threshold} 的约束下,")
+    print(f"可以达到的最大化的最小速率 R_min* = {optimal_R_min:.2f}")
+
+    # 提取结果
+    assignments = []
+    association_matrix = np.zeros((M, N), dtype=int)
+    for m in range(M):
+        for n in range(N):
+            if pulp.value(x[m][n]) == 1:
+                assignments.append((m, n))
+                association_matrix[m, n] = 1
+                break
+                
+    return assignments, association_matrix
 '''
 def create_association_based_on_rate(rate_matrix, load_range_tolerance=0):
     """
@@ -763,31 +857,32 @@ def create_association_based_on_rate(rate_matrix, load_range_tolerance=0):
     else:
         print(f"ILP solver could not find an optimal solution. Status: {pulp.LpStatus[prob.status]}")
         return None, None
-'''
+
 def create_association_based_on_rate(rate_matrix):
     """
     基于传输速率矩阵为每个客户端选择最佳的边缘服务器
-    
+
     Args:
         rate_matrix: 传输速率矩阵 (M, N)，M为客户端数量，N为边缘服务器数量
-    
+
     Returns:
         tuple: (分配列表[(client_idx, es_idx), ...], 关联矩阵(M, N))
     """
     M, N = rate_matrix.shape  # M: 客户端数量, N: 边缘服务器数量
-    
+
     # 为每个客户端选择传输速率最大的边缘服务器
     best_es_for_client = np.argmax(rate_matrix, axis=1)  # 每个客户端最佳的边缘服务器索引
-    
+
     # 创建分配列表 [(client_idx, es_idx), ...]
     assignments = [(m, best_es_for_client[m]) for m in range(M)]
-    
+
     # 创建关联矩阵 (二进制矩阵，表示客户端和边缘服务器之间的关联)
     association_matrix = np.zeros((M, N), dtype=int)
     for m, n in assignments:
         association_matrix[m, n] = 1
-    
+
     return assignments, association_matrix
+'''
 
 def plot_assigned_graph(bipartite_graph, client_nodes, es_nodes, assignments, cluster_heads, C2, es_nodes_indices):
     pos = nx.get_node_attributes(bipartite_graph, 'pos')
