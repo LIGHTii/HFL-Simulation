@@ -1100,8 +1100,8 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
         # 定义客户端到云通信的专属参数
         cloud_direct_bandwidth = 8e7          # 直连云带宽较低 (80 MHz)
         cloud_direct_sigma = 0.3              # 带宽对数正态分布的标准差
-        cloud_direct_range = (5e7, 1e8)       # 带宽范围 10-200 MHz
-        
+        cloud_direct_range = (5e7, 1e8)       # 带宽范围 50-100 MHz
+
         # 计算每个客户端到云的距离
         client_to_cloud_distance = np.zeros((M, 1))
         for idx in range(M):
