@@ -72,9 +72,13 @@ def args_parser():
                        help="number of EH layer aggregation rounds")
     parser.add_argument('--num_processes', type=int, default=8,
                        help="number of parallel processes for client training")
+    
+    # Clustering-specific training parameters
+    parser.add_argument('--cluster_local_ep', type=int, default=10,
+                       help="number of local epochs for spectral clustering training (if None, use local_ep)")
 
     # Network topology parameters
-    parser.add_argument('--es_ratio', type=float, default=0.2,
+    parser.add_argument('--es_ratio', type=float, default=0.34,
                        help="ratio of edge servers to total nodes (default: 0.34)")
     parser.add_argument('--graphml_file', type=str, default="graph-example/754Kdl.graphml",
                        help="path to the GraphML network topology file")
@@ -116,9 +120,11 @@ def args_parser():
     if args.dataset == 'mnist':
         args.num_classes = 10
         args.num_channels = 1
+        args.cluster_local_ep = 30  # MNIST聚类训练使用30轮
     elif args.dataset == 'cifar':
         args.num_classes = 10
         args.num_channels = 3
+        args.cluster_local_ep = 10  # CIFAR-10聚类训练使用10轮
     elif args.dataset == 'cifar100':
         args.num_classes = 100  # CIFAR-100有100个类别
         args.num_channels = 3

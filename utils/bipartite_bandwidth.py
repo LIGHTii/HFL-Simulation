@@ -3,6 +3,7 @@ import math
 import networkx as nx
 import numpy as np
 import pulp
+from scipy.optimize import linear_sum_assignment
 # import numpy as np
 # import cupy as cp
 # from scipy.optimize import linear_sum_assignment
@@ -491,7 +492,7 @@ def filter_nodes_by_geographic_range(G, node_ids, pos, filter_radius_ratio=0.3,
 
 
 
-def build_bipartite_graph(graphml_file, es_ratio=None, visualize=True):
+def build_network_topology(graphml_file, es_ratio=None, visualize=True):
     """
     从GraphML文件构建客户端-边缘服务器二部图网络拓扑
     
@@ -587,31 +588,53 @@ def build_bipartite_graph(graphml_file, es_ratio=None, visualize=True):
     # 使用封装的函数选择边缘服务器
     es_nodes, client_nodes = select_edge_servers_uniformly(node_ids, pos, es_ratio)
 
-    # 构建完全二部图（每个客户端连接所有边缘服务器）
-    bipartite_graph = nx.Graph()
-    bipartite_graph.add_nodes_from(client_nodes, bipartite=0)  # 客户端标记为0
-    bipartite_graph.add_nodes_from(es_nodes, bipartite=1)      # 边缘服务器标记为1
-    for c in client_nodes:
-        for e in es_nodes:
-            bipartite_graph.add_edge(c, e)
-
-    # 为二部图节点添加位置信息
-    for node in bipartite_graph.nodes():
-        if node in pos:
-            bipartite_graph.nodes[node]['pos'] = pos[node]
+    # 为节点添加位置信息并验证
+    pos = {}
+    valid_client_nodes = []
+    valid_es_nodes = []
+    
+    # 为客户端节点添加位置信息
+    for node in client_nodes:
+        if node in G.nodes:
+            node_data = G.nodes[node]
+            if 'Latitude' in node_data and 'Longitude' in node_data:
+                try:
+                    lat = float(node_data['Latitude'])
+                    lon = float(node_data['Longitude'])
+                    pos[node] = (lon, lat)
+                    valid_client_nodes.append(node)
+                except (ValueError, TypeError):
+                    print(f"Warning: Invalid lat/lon for client node {node}")
+            else:
+                print(f"Warning: Client node {node} lacks Latitude/Longitude, removing")
         else:
-            print(f"Warning: Node {node} in bipartite graph lacks pos, removing")
-            bipartite_graph.remove_node(node)
-            if node in client_nodes:
-                client_nodes.remove(node)
-            if node in es_nodes:
-                es_nodes.remove(node)
-
+            print(f"Warning: Client node {node} not found in graph, removing")
+    
+    # 为边缘服务器节点添加位置信息
+    for node in es_nodes:
+        if node in G.nodes:
+            node_data = G.nodes[node]
+            if 'Latitude' in node_data and 'Longitude' in node_data:
+                try:
+                    lat = float(node_data['Latitude'])
+                    lon = float(node_data['Longitude'])
+                    pos[node] = (lon, lat)
+                    valid_es_nodes.append(node)
+                except (ValueError, TypeError):
+                    print(f"Warning: Invalid lat/lon for ES node {node}")
+            else:
+                print(f"Warning: ES node {node} lacks Latitude/Longitude, removing")
+        else:
+            print(f"Warning: ES node {node} not found in graph, removing")
+    
+    # 更新节点列表为有效节点
+    client_nodes = valid_client_nodes
+    es_nodes = valid_es_nodes
+    
     # 最终位置检查
-    pos = nx.get_node_attributes(bipartite_graph, 'pos')
     if not all(node in pos for node in client_nodes + es_nodes):
         print("Error: Some nodes still lack pos attributes after final check")
-        return None, [], [], None, None, None
+        return None, [], [], None, None
 
     # 计算客户端-边缘服务器距离矩阵
     distance_matrix = np.zeros((len(client_nodes), len(es_nodes)))
@@ -666,120 +689,104 @@ def build_bipartite_graph(graphml_file, es_ratio=None, visualize=True):
     except:
         pass  # 如果获取筛选信息失败，filter_info保持为None
 
-    return bipartite_graph, client_nodes, es_nodes, distance_matrix, pos, filter_info
+    return client_nodes, es_nodes, distance_matrix, pos, filter_info
 
-def plot_graph(bipartite_graph, client_nodes, es_nodes):
-    pos = nx.get_node_attributes(bipartite_graph, 'pos')
-    missing_pos = [n for n in client_nodes + es_nodes if n not in pos]
-    if missing_pos:
-        print(f"Error: Nodes {missing_pos} missing pos attributes in plot_graph")
-        return
-    plt.figure(figsize=(10, 8))
-    nx.draw_networkx_nodes(bipartite_graph, pos, nodelist=client_nodes, node_color='lightblue', node_shape='o',
-                           node_size=300, label='Clients')
-    nx.draw_networkx_nodes(bipartite_graph, pos, nodelist=es_nodes, node_color='lightcoral', node_shape='s',
-                           node_size=300, label='Edge Servers')
-    plt.legend()
-    plt.title("Bipartite Graph (Clients and Edge Servers)")
-    plt.savefig("bipartite_graph.png")
-    plt.close()
-
-
-import numpy as np
-from scipy.optimize import linear_sum_assignment
-
-import pulp
-import numpy as np
-import math
-
-
-def create_association_based_on_rate(rate_matrix, load_deviation_threshold=1):
+def create_balanced_association(rate_matrix, tolerance=0.3):
     """
-    基于ILP为客户端选择边缘服务器。
-
-    主要目标: 在满足负载均衡约束的前提下，最大化最小传输速率。
-    约束:    所有被使用的边缘服务器之间的负载差不能超过 'load_deviation_threshold'。
+    在每次迭代中，寻找全局最优的迁移方案：
+    从最繁忙的服务器，迁移一个客户端到任何一个负载明显更低的服务器上，
+    并选择能使该客户端获得最高速率的迁移路径。
 
     Args:
-        rate_matrix (np.ndarray): 传输速率矩阵 (M, N)。
-        load_deviation_threshold (int): 允许的工作服务器之间的最大负载差。
-    
+        rate_matrix (np.ndarray): 传输速率矩阵 (M, N)，M为客户端数量，N为边缘服务器数量。
+        tolerance (float): 最小速率容忍度。
+
     Returns:
-        tuple: (分配列表, 关联矩阵) 或 (None, None) 如果无解。
+        tuple: (分配列表[(client_idx, es_idx), ...], 关联矩阵(M, N))
     """
     M, N = rate_matrix.shape
-    
-    # 1. 创建问题实例
-    prob = pulp.LpProblem("Maximize_Min_Rate_With_Load_Constraint", pulp.LpMaximize)
-    
-    # 2. 定义决策变量
-    # x[m][n]: 客户端m -> 服务器n 的关联关系
-    x = pulp.LpVariable.dicts("x", (range(M), range(N)), cat='Binary')
-    
-    # y[n]: 服务器n是否被使用 (负载 > 0)
-    y = pulp.LpVariable.dicts("y", range(N), cat='Binary')
-    
-    # L[n]: 服务器n的负载
-    L = pulp.LpVariable.dicts("L", range(N), lowBound=0, cat='Integer')
-    
-    # R_min: 最小传输速率
-    R_min = pulp.LpVariable("R_min", lowBound=0, cat='Continuous')
 
-    # 3. 设置目标函数
-    prob += R_min, "Objective_Maximize_R_min"
+    # --- 步骤 1: 初始贪心分配 (与之前相同) ---
+    best_es_for_client = np.argmax(rate_matrix, axis=1)
+    initial_association_matrix = np.zeros((M, N), dtype=int)
+    initial_association_matrix[np.arange(M), best_es_for_client] = 1
     
-    # 4. 添加约束
-    # 约束1: 每个客户端只能关联到一个服务器
-    for m in range(M):
-        prob += pulp.lpSum(x[m][n] for n in range(N)) == 1, f"Client_Assignment_{m}"
+    allocated_rates_initial = rate_matrix[np.arange(M), best_es_for_client]
+    min_rate_initial = np.min(allocated_rates_initial)
+    min_rate_threshold = min_rate_initial * (1.0 - tolerance)
 
-    # 约束2: 定义R_min
-    for m in range(M):
-        prob += pulp.lpSum(x[m][n] * rate_matrix[m, n] for n in range(N)) >= R_min, f"Min_Rate_Constraint_{m}"
+    print("\n========== 初始贪心分配结果 ==========")
+    print(f"最小传输速率: {min_rate_initial/1e6:.2f} Mbps")
+    initial_loads = np.sum(initial_association_matrix, axis=0)
+    print(f"边缘服务器负载分布: {initial_loads}")
+    print(f"负载标准差: {np.std(initial_loads):.2f}")
+    print(f"调整时可接受的最低速率阈值: {min_rate_threshold/1e6:.2f} Mbps")
 
-    # 约束3: 计算每个服务器的负载 L[n]
-    for n in range(N):
-        prob += pulp.lpSum(x[m][n] for m in range(M)) == L[n], f"Load_Calculation_{n}"
+    # --- 步骤 2: 增强的迭代调整逻辑 ---
+    current_association_matrix = initial_association_matrix.copy()
+
+    for _ in range(M * N):
+        loads = np.sum(current_association_matrix, axis=0)
+        es_max_load_idx = np.argmax(loads)
         
-    # 约束4: 关联服务器激活状态 y[n] 和负载 L[n]
-    for n in range(N):
-        # 如果L[n] > 0, y[n]必须为1 (Big-M formulation)
-        prob += L[n] <= M * y[n], f"Activate_Server_If_Loaded_{n}"
-        # 如果y[n]为1, L[n]必须>=1
-        prob += L[n] >= y[n], f"Load_If_Active_{n}"
+        # 如果负载差异小于等于1，认为已经足够平衡
+        if loads[es_max_load_idx] - np.min(loads) <= 1:
+            break
+        
+        # 新逻辑：找出所有可以作为目标的、负载显著更低的服务器
+        candidate_destination_indices = np.where(loads[es_max_load_idx] - loads > 1)[0]
+        
+        # 如果没有这样的目标服务器，就没法移动了
+        if len(candidate_destination_indices) == 0:
+            break
 
-    # 约束5: 核心约束 - 任意两个*激活的*服务器之间的负载偏差
-    # 使用 Big-M 方法，仅当y[n]和y[k]都为1时，约束才生效
-    for n in range(N):
-        for k in range(n + 1, N):
-            # L[n] - L[k] <= threshold, if y[n]=1 and y[k]=1
-            prob += L[n] - L[k] <= load_deviation_threshold + M * (2 - y[n] - y[k]), f"Load_Dev_{n}_{k}"
-            # L[k] - L[n] <= threshold, if y[n]=1 and y[k]=1
-            prob += L[k] - L[n] <= load_deviation_threshold + M * (2 - y[n] - y[k]), f"Load_Dev_{k}_{n}"
-
-    # 求解问题
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
-
-    if pulp.LpStatus[prob.status] != 'Optimal':
-        print(f"警告: 未能找到最优解。状态: {pulp.LpStatus[prob.status]}")
-        print("这可能是因为负载偏差约束过于严格，导致问题无解。请尝试放宽 'load_deviation_threshold'。")
-        return None, None
-    
-    optimal_R_min = pulp.value(R_min)
-    print(f"求解完成: 在负载偏差不超过 {load_deviation_threshold} 的约束下,")
-    print(f"可以达到的最大化的最小速率 R_min* = {optimal_R_min:.2f}")
-
-    # 提取结果
-    assignments = []
-    association_matrix = np.zeros((M, N), dtype=int)
-    for m in range(M):
-        for n in range(N):
-            if pulp.value(x[m][n]) == 1:
-                assignments.append((m, n))
-                association_matrix[m, n] = 1
-                break
+        # 找出所有连接到最繁忙服务器的客户端
+        clients_on_overloaded_es = np.where(current_association_matrix[:, es_max_load_idx] == 1)[0]
+        
+        # 初始化本次迭代的最佳移动方案
+        best_move = {
+            "client_to_move": -1,
+            "destination_es": -1,
+            "best_rate": -1
+        }
+        
+        # 全局搜索：在所有过载客户端和所有候选目标服务器之间，寻找最优移动
+        for client_idx in clients_on_overloaded_es:
+            for dest_idx in candidate_destination_indices:
+                rate_if_moved = rate_matrix[client_idx, dest_idx]
                 
-    return assignments, association_matrix
+                # 检查是否满足速率要求，并且是否是目前最优的选择
+                if rate_if_moved >= min_rate_threshold and rate_if_moved > best_move["best_rate"]:
+                    best_move["client_to_move"] = client_idx
+                    best_move["destination_es"] = dest_idx
+                    best_move["best_rate"] = rate_if_moved
+
+        # 如果找到了可行的移动方案，则执行
+        if best_move["client_to_move"] != -1:
+            client_to_move = best_move["client_to_move"]
+            destination_es = best_move["destination_es"]
+            
+            # 从旧服务器移除
+            current_association_matrix[client_to_move, es_max_load_idx] = 0
+            # 添加到新服务器
+            current_association_matrix[client_to_move, destination_es] = 1
+        else:
+            # 如果遍历了所有可能，都找不到满足条件的移动，说明无法再优化
+            break
+
+    # --- 步骤 3: 输出并返回最终结果 (与之前相同) ---
+    final_assignments = [(m, np.argmax(current_association_matrix[m, :])) for m in range(M)]
+    final_es_for_client = np.argmax(current_association_matrix, axis=1)
+    allocated_rates_final = rate_matrix[np.arange(M), final_es_for_client]
+    
+    print(f"\n========== 负载均衡调整后结果 (V2) ==========")
+    print(f"最小传输速率: {np.min(allocated_rates_final)/1e6:.2f} Mbps")
+    print(f"平均传输速率: {np.mean(allocated_rates_final)/1e6:.2f} Mbps")
+    final_loads = np.sum(current_association_matrix, axis=0)
+    print(f"边缘服务器负载分布: {final_loads}")
+    print(f"负载标准差: {np.std(final_loads):.2f}")
+
+    return final_assignments, current_association_matrix
 '''
 def create_association_based_on_rate(rate_matrix, load_range_tolerance=0):
     """
@@ -857,7 +864,7 @@ def create_association_based_on_rate(rate_matrix, load_range_tolerance=0):
     else:
         print(f"ILP solver could not find an optimal solution. Status: {pulp.LpStatus[prob.status]}")
         return None, None
-
+'''
 def create_association_based_on_rate(rate_matrix):
     """
     基于传输速率矩阵为每个客户端选择最佳的边缘服务器
@@ -881,36 +888,26 @@ def create_association_based_on_rate(rate_matrix):
     for m, n in assignments:
         association_matrix[m, n] = 1
 
-    return assignments, association_matrix
-'''
+    # 计算分配的传输速率
+    allocated_rates = [rate_matrix[m, best_es_for_client[m]] for m in range(M)]
+    min_rate = np.min(allocated_rates)
+    avg_rate = np.mean(allocated_rates)
+    max_rate = np.max(allocated_rates)
+    
+    print(f"\n========== 贪心分配算法结果 ==========")
+    print(f"最小传输速率: {min_rate/1e6:.2f} Mbps")
+    print(f"平均传输速率: {avg_rate/1e6:.2f} Mbps")
+    print(f"最大传输速率: {max_rate/1e6:.2f} Mbps")
+    
+    # 计算负载分布
+    loads = np.sum(association_matrix, axis=0)
+    print(f"边缘服务器负载分布: {loads}")
+    print(f"负载标准差: {np.std(loads):.2f}")
 
-def plot_assigned_graph(bipartite_graph, client_nodes, es_nodes, assignments, cluster_heads, C2, es_nodes_indices):
-    pos = nx.get_node_attributes(bipartite_graph, 'pos')
-    missing_pos = [n for n in client_nodes + es_nodes if n not in pos]
-    if missing_pos:
-        print(f"Error: Nodes {missing_pos} missing pos attributes in plot_assigned_graph")
-        return
-    plt.figure(figsize=(12, 10))
-    nx.draw_networkx_nodes(bipartite_graph, pos, nodelist=client_nodes, node_color='lightblue', node_shape='o',
-                           node_size=300, label='Clients')
-    nx.draw_networkx_nodes(bipartite_graph, pos, nodelist=[es_nodes[i] for i in es_nodes_indices if i not in cluster_heads.values()],
-                           node_color='lightcoral', node_shape='s', node_size=300, label='Edge Servers')
-    nx.draw_networkx_nodes(bipartite_graph, pos, nodelist=[es_nodes[v] for v in cluster_heads.values() if v != -1],
-                           node_color='gold', node_shape='*', node_size=500, label='Cluster Heads')
-    assigned_edges = [(client_nodes[m], es_nodes[n]) for m, n in assignments]
-    nx.draw_networkx_edges(bipartite_graph, pos, edgelist=assigned_edges, edge_color='navy', width=2)
-    for ch_idx, es_indices in C2.items():
-        if cluster_heads[ch_idx] == -1:
-            continue
-        ch_node = es_nodes[cluster_heads[ch_idx]]
-        for es_idx in es_indices:
-            if es_idx != cluster_heads[ch_idx]:
-                nx.draw_networkx_edges(bipartite_graph, pos, edgelist=[(es_nodes[es_idx], ch_node)],
-                                       edge_color='purple', width=1.5, style='dashed')
-    plt.legend()
-    plt.title("Assigned Bipartite Graph with Cluster Heads (Navy: Client-ES, Purple: ES-CH)")
-    plt.savefig("assigned_bipartite_graph_with_ch.png")
-    plt.close()
+    return assignments, association_matrix
+
+
+# 原有的绘图函数已移除
 
 def establish_communication_channels(client_nodes, es_nodes, distance_matrix, pos, max_capacity=None):
     """
@@ -994,7 +991,34 @@ def establish_communication_channels(client_nodes, es_nodes, distance_matrix, po
     print("\n========== 基于最大传输速率为客户端分配边缘服务器 ==========")
 
     # 基于最大传输速率为每个客户端选择边缘服务器
-    assignments, original_association_matrix = create_association_based_on_rate(r_client_to_es)
+    # print("\n========== 使用贪心算法分配客户端到边缘服务器 ==========")
+    # assignments, original_association_matrix = create_association_based_on_rate(r_client_to_es)
+    
+    # print("\n========== 使用优化算法分配客户端到边缘服务器 ==========")
+    assignments, original_association_matrix = create_balanced_association(r_client_to_es)
+    
+    # 生成可视化图
+    if original_association_matrix is not None:
+        print("\n========== 生成分配结果可视化 ==========")
+        viz_path = visualize_node_distribution(
+            client_nodes, es_nodes, pos, es_ratio=len(es_nodes)/len(client_nodes+es_nodes), 
+            save_path="./save/assignment_visualization.png",
+            association_matrix=original_association_matrix
+        )
+        print(f"可视化已保存: {viz_path}")
+
+    # # 生成ILP算法的可视化图（如果ILP有解）
+    # if assignments_ILP is not None and original_association_matrix_ILP is not None:
+    #     print("\n========== 生成ILP优化算法分配结果可视化 ==========")
+    #     ilp_viz_path = visualize_node_distribution(
+    #         client_nodes, es_nodes, pos, es_ratio=len(es_nodes)/len(client_nodes+es_nodes),
+    #         save_path="./save/ilp_assignment_visualization.png", 
+    #         association_matrix=original_association_matrix_ILP
+    #     )
+    #     print(f"ILP算法可视化已保存: {ilp_viz_path}")
+    # else:
+    #     print("警告: ILP算法未找到可行解，无法生成可视化图")
+    
     # print(f"创建了基于最大传输速率的关联矩阵")
     # print(f"总关联数: {len(assignments)}/{M} ({len(assignments)/M:.2%})")
     # print(f"原始关联矩阵形状: {original_association_matrix.shape}")
@@ -1301,7 +1325,6 @@ def run_bandwidth_allocation(graphml_file=None, es_ratio=None, max_capacity=None
     - visualize: 是否生成可视化图
 
     返回:
-    - bipartite_graph: 构建的二部图对象
     - client_nodes: 客户端节点列表
     - active_es_nodes: 活跃边缘服务器节点列表
     - association_matrix: 客户端到边缘服务器的关联矩阵
@@ -1321,10 +1344,10 @@ def run_bandwidth_allocation(graphml_file=None, es_ratio=None, max_capacity=None
             max_capacity = args.max_capacity
     
     # 构建二部图
-    bipartite_graph, client_nodes, es_nodes, distance_matrix, pos, filter_info = build_bipartite_graph(
+    client_nodes, es_nodes, distance_matrix, pos, filter_info = build_network_topology(
         graphml_file, es_ratio, visualize)
-    if bipartite_graph is None:
-        return None, [], [], None, None, None, None, None
+    if client_nodes is None or len(client_nodes) == 0:
+        return [], [], None, None, None, None, None
     print("===============构建二部图==================")
     print("Bipartite Graph Built Successfully!")
     print(f"Total Client Nodes: {len(client_nodes)}")
@@ -1341,16 +1364,71 @@ def run_bandwidth_allocation(graphml_file=None, es_ratio=None, max_capacity=None
     
     # # 使用与establish_communication_channels中相同的max_capacity值进行验证
     # validate_results(B_cloud=5e7, B_n=B_n, r=r, assignments=assignments, loads=loads, max_capacity=max_capacity)
-    visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, cloud_pos=cloud_pos, association_matrix=original_association_matrix, filter_info=filter_info)
+    # visualize_node_distribution(client_nodes, es_nodes, pos, es_ratio, cloud_pos=cloud_pos, association_matrix=original_association_matrix, filter_info=filter_info)
     # 返回精简的结果集
-    return bipartite_graph, client_nodes, active_es_nodes, association_matrix, r_client_to_active_es, r_es, r_es_to_cloud, r_client_to_cloud
+    return client_nodes, active_es_nodes, association_matrix, r_client_to_active_es, r_es, r_es_to_cloud, r_client_to_cloud
 
 
 if __name__ == '__main__':
     args = args_parser()
-    result = build_bipartite_graph(graphml_file='graph-example/Ulaknet.graphml', es_ratio=args.es_ratio)
-    if result:
-        bipartite_graph, client_nodes, es_nodes, distance_matrix, pos, filter_info = result
-        print(f"Built bipartite graph with {len(client_nodes)} clients and {len(es_nodes)} edge servers")
-        if filter_info:
-            print(f"Applied geographic filter: center {filter_info['center']}, radius {filter_info['radius']} km")
+    
+    # 测试运行带宽分配算法
+    print("========== 开始测试带宽分配算法 ==========")
+    
+    # 调用主函数测试
+    result = run_bandwidth_allocation(
+        graphml_file=args.graphml_file,
+        es_ratio=args.es_ratio, 
+        max_capacity=args.max_capacity,
+        visualize=True
+    )
+    
+    # if result and len(result) == 7:
+    #     client_nodes, active_es_nodes, association_matrix, r_client_to_es, r_es, r_es_to_cloud, r_client_to_cloud = result
+        
+    #     print(f"\n========== 测试结果总结 ==========")
+    #     print(f"客户端数量: {len(client_nodes)}")
+    #     print(f"活跃边缘服务器数量: {len(active_es_nodes)}")
+    #     print(f"关联矩阵形状: {association_matrix.shape}")
+        
+    #     if r_client_to_es is not None:
+    #         print(f"客户端到ES传输速率统计:")
+    #         print(f"  最小速率: {np.min(r_client_to_es)/1e6:.2f} Mbps")
+    #         print(f"  平均速率: {np.mean(r_client_to_es)/1e6:.2f} Mbps") 
+    #         print(f"  最大速率: {np.max(r_client_to_es)/1e6:.2f} Mbps")
+            
+    #     if r_es is not None:
+    #         print(f"ES间传输速率统计:")
+    #         non_zero_rates = r_es[r_es > 0]
+    #         if len(non_zero_rates) > 0:
+    #             print(f"  最小速率: {np.min(non_zero_rates)/1e6:.2f} Mbps")
+    #             print(f"  平均速率: {np.mean(non_zero_rates)/1e6:.2f} Mbps")
+    #             print(f"  最大速率: {np.max(non_zero_rates)/1e6:.2f} Mbps")
+                
+    #     if r_es_to_cloud is not None:
+    #         print(f"ES到云传输速率统计:")
+    #         print(f"  最小速率: {np.min(r_es_to_cloud)/1e6:.2f} Mbps")
+    #         print(f"  平均速率: {np.mean(r_es_to_cloud)/1e6:.2f} Mbps")
+    #         print(f"  最大速率: {np.max(r_es_to_cloud)/1e6:.2f} Mbps")
+            
+    #     if r_client_to_cloud is not None:
+    #         print(f"客户端到云直连传输速率统计:")
+    #         print(f"  最小速率: {np.min(r_client_to_cloud)/1e6:.2f} Mbps")
+    #         print(f"  平均速率: {np.mean(r_client_to_cloud)/1e6:.2f} Mbps")
+    #         print(f"  最大速率: {np.max(r_client_to_cloud)/1e6:.2f} Mbps")
+            
+    #     # 计算负载分布
+    #     loads = np.sum(association_matrix, axis=0)
+    #     print(f"\n边缘服务器负载分布: {loads}")
+    #     print(f"负载统计:")
+    #     print(f"  最小负载: {np.min(loads)}")
+    #     print(f"  平均负载: {np.mean(loads):.2f}")
+    #     print(f"  最大负载: {np.max(loads)}")
+    #     print(f"  负载标准差: {np.std(loads):.2f}")
+        
+    #     print(f"\n========== 算法测试完成 ==========")
+    #     print(f"生成的可视化图片保存在 ./save/ 目录下")
+        
+    # else:
+    #     print("❌ 测试失败: 无法获取有效结果")
+    #     print("请检查GraphML文件路径和参数设置")

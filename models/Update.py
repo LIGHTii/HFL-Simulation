@@ -47,18 +47,22 @@ class DatasetSplit(Dataset):
 
 
 class LocalUpdate(object):
-    def __init__(self, args, dataset=None, idxs=None, user_classes=None):
+    def __init__(self, args, dataset=None, idxs=None, user_classes=None, use_cluster_ep=False):
         self.args = args
         self.loss_func = nn.CrossEntropyLoss()
         self.selected_clients = []
         self.ldr_train = DataLoader(DatasetSplit(dataset, idxs), batch_size=self.args.local_bs, shuffle=True) # 数据加载器，
         self.user_classes = user_classes  # 客户端拥有的类别信息
+        self.use_cluster_ep = use_cluster_ep  # 是否使用聚类专用的local_ep
 
     def train(self, net):
         net.train()
         
-        # 为 FedRS 算法支持动态 local epochs
-        if self.args.method == 'fedrs' and hasattr(self.args, 'min_le') and hasattr(self.args, 'max_le'):
+        # 根据使用场景选择不同的local_ep
+        if self.use_cluster_ep and hasattr(self.args, 'cluster_local_ep') and self.args.cluster_local_ep is not None:
+            local_ep = self.args.cluster_local_ep
+            print(f"  [聚类训练] 使用cluster_local_ep={local_ep}")
+        elif self.args.method == 'fedrs' and hasattr(self.args, 'min_le') and hasattr(self.args, 'max_le'):
             local_ep = random.randint(self.args.min_le, self.args.max_le)
         else:
             local_ep = self.args.local_ep

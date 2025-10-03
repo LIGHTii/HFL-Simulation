@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 # Python version: 3.6
 import os
+import random
 
 import numpy as np
 from torchvision import datasets, transforms
@@ -347,6 +348,191 @@ def create_dataset_objects(args):
         exit('Error: unrecognized dataset')
     
     return dataset_train, dataset_test
+
+
+def get_data_test(args):
+    """
+    获取训练和测试数据，支持两种固定的Non-IID数据分布类型
+    
+    Args:
+        args: 参数对象，包含数据集、用户数量等配置
+        
+    Returns:
+        tuple: (dataset_train, dataset_test, dict_users, client_classes)
+    """
+    import random
+    import numpy as np
+    
+    print(f"\n🧪 使用测试版数据分配 (get_data_test)")
+    print(f"📊 Non-IID模式：仅使用两种固定的数据分布类型")
+    
+    # 首先检查是否需要从文件加载数据
+    if hasattr(args, 'load_data') and args.load_data:
+        print(f"\n🔄 尝试从文件加载客户端数据: {args.load_data}")
+        
+        # 如果指定了相对路径，尝试在数据保存目录中查找
+        if not os.path.isabs(args.load_data):
+            save_dir = getattr(args, 'data_save_dir', './saved_data/')
+            full_path = os.path.join(save_dir, args.load_data)
+            if os.path.exists(full_path):
+                args.load_data = full_path
+        
+        # 创建数据集对象（用于兼容性）
+        dataset_train, dataset_test = create_dataset_objects(args)
+        
+        # 尝试加载数据
+        dict_users, client_classes = load_client_data_distribution(args.load_data, args)
+        
+        if dict_users is not None and client_classes is not None:
+            print("✅ 成功从文件加载客户端数据分配")
+            return dataset_train, dataset_test, dict_users, client_classes
+        else:
+            print("❌ 从文件加载数据失败，将重新生成数据")
+    
+    print("\n🔨 生成新的测试版客户端数据分配...")
+    
+    # 创建数据集对象
+    dataset_train, dataset_test = create_dataset_objects(args)
+    
+    # 确定数据集类型
+    if args.dataset == 'mnist':
+        num_classes = 10
+        class_names = list(range(10))
+    elif args.dataset == 'cifar':
+        num_classes = 10  
+        class_names = list(range(10))
+    elif args.dataset == 'cifar100':
+        num_classes = 100
+        class_names = list(range(100))
+    else:
+        raise ValueError(f'Error: unrecognized dataset {args.dataset}')
+    
+    # 定义两种固定的数据分布类型
+    if args.iid:
+        print("🎯 IID模式：所有客户端使用相同的IID分布")
+        # IID模式下，所有客户端都使用相同的分布
+        if args.dataset == 'mnist':
+            dict_users = mnist_iid(dataset_train, args.num_users)
+        elif args.dataset == 'cifar':
+            dict_users = cifar_iid(dataset_train, args.num_users)
+        elif args.dataset == 'cifar100':
+            dict_users = cifar100_iid(dataset_train, args.num_users)
+        
+        # 计算客户端类别信息
+        client_classes = get_client_classes_from_sampling(dataset_train, dict_users)
+        
+    else:
+        print("🎯 Non-IID模式：使用两种固定的数据分布类型")
+        
+        # 定义两种不同的Non-IID分布类型
+        if num_classes >= 6:
+            # 类型A：偏向前半部分类别 (0, 1, 2, ...)
+            type_A_classes = class_names[:num_classes//2]
+            # 类型B：偏向后半部分类别 (..., 7, 8, 9)
+            type_B_classes = class_names[num_classes//2:]
+        else:
+            # 如果类别太少，交替分配
+            type_A_classes = [class_names[i] for i in range(0, num_classes, 2)]  # 偶数索引
+            type_B_classes = [class_names[i] for i in range(1, num_classes, 2)]  # 奇数索引
+        
+        print(f"📋 类型A分布主要类别: {type_A_classes}")
+        print(f"📋 类型B分布主要类别: {type_B_classes}")
+        
+        # 为每个客户端随机分配分布类型
+        distribution_types = []
+        for i in range(args.num_users):
+            dist_type = random.choice(['A', 'B'])
+            distribution_types.append(dist_type)
+        
+        type_A_count = distribution_types.count('A')
+        type_B_count = distribution_types.count('B')
+        print(f"📊 分布类型分配：类型A {type_A_count}个客户端，类型B {type_B_count}个客户端")
+        
+        # 生成每种类型的数据分配
+        dict_users = {}
+        client_classes = {}
+        
+        # 获取每个类别的样本索引
+        labels = np.array(dataset_train.targets)
+        class_indices = {}
+        for class_id in range(num_classes):
+            class_indices[class_id] = np.where(labels == class_id)[0]
+        
+        # 为每个客户端分配数据
+        samples_per_client = len(dataset_train) // args.num_users
+        
+        for client_id in range(args.num_users):
+            dist_type = distribution_types[client_id]
+            
+            if dist_type == 'A':
+                # 类型A：80%来自type_A_classes，20%来自type_B_classes
+                main_classes = type_A_classes
+                minor_classes = type_B_classes
+            else:
+                # 类型B：80%来自type_B_classes，20%来自type_A_classes
+                main_classes = type_B_classes  
+                minor_classes = type_A_classes
+            
+            # 分配样本
+            client_indices = []
+            
+            # 80%来自主要类别
+            main_samples = int(samples_per_client * 0.8)
+            main_samples_per_class = main_samples // len(main_classes)
+            
+            for class_id in main_classes:
+                available_indices = class_indices[class_id]
+                if len(available_indices) >= main_samples_per_class:
+                    selected = np.random.choice(available_indices, main_samples_per_class, replace=False)
+                else:
+                    selected = np.random.choice(available_indices, main_samples_per_class, replace=True)
+                client_indices.extend(selected)
+            
+            # 20%来自次要类别
+            minor_samples = samples_per_client - len(client_indices)
+            if minor_samples > 0 and len(minor_classes) > 0:
+                minor_samples_per_class = minor_samples // len(minor_classes)
+                for class_id in minor_classes:
+                    available_indices = class_indices[class_id]
+                    if len(available_indices) >= minor_samples_per_class:
+                        selected = np.random.choice(available_indices, minor_samples_per_class, replace=False)
+                    else:
+                        selected = np.random.choice(available_indices, minor_samples_per_class, replace=True)
+                    client_indices.extend(selected)
+            
+            # 如果还差一些样本，随机补充
+            while len(client_indices) < samples_per_client:
+                remaining_samples = samples_per_client - len(client_indices)
+                all_available = np.concatenate([class_indices[c] for c in (main_classes + minor_classes)])
+                additional = np.random.choice(all_available, min(remaining_samples, len(all_available)), replace=False)
+                client_indices.extend(additional)
+            
+            # 确保不超过目标数量
+            client_indices = client_indices[:samples_per_client]
+            
+            dict_users[client_id] = set(client_indices)
+            
+            # 计算此客户端的类别分布
+            client_labels = labels[client_indices]
+            unique_classes = np.unique(client_labels).tolist()
+            client_classes[client_id] = unique_classes
+        
+        # 打印分布统计
+        print(f"\n📈 数据分布统计:")
+        for client_id in range(min(5, args.num_users)):  # 只显示前5个客户端
+            dist_type = distribution_types[client_id]
+            classes = client_classes[client_id]
+            print(f"  客户端{client_id} (类型{dist_type}): {len(classes)}个类别 {classes}")
+        
+        if args.num_users > 5:
+            print(f"  ... 以及其他 {args.num_users - 5} 个客户端")
+    
+    # 保存数据分配到文件
+    if hasattr(args, 'save_data') and args.save_data:
+        save_client_data_distribution(dict_users, client_classes, args)
+    
+    print("✅ 测试版数据分配生成完成")
+    return dataset_train, dataset_test, dict_users, client_classes
 
 
 if __name__ == '__main__':

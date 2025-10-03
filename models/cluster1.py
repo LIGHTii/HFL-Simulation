@@ -2,6 +2,7 @@
 # 相似度矩阵 拉普拉斯 特征值取小
 import numpy as np
 from sklearn.cluster import KMeans
+from scipy.linalg import eigh
 
 def distance(x1, x2):
     """计算两个样本点之间的欧式距离"""
@@ -50,13 +51,37 @@ def normalize_W(W):
     return W_normalized
 
 def getEigen(W_normalized, cluster_num):
-    """
-    获得距离矩阵 W 的前 cluster_num 个最小特征值对应的特征向量
-    """
-    eigval, eigvec = np.linalg.eig(W_normalized)
-    idx = np.argsort(eigval.real)  # 按实部 从小到大排序
-    selected_idx = idx[:cluster_num]  # 改为取最小的 cluster_num 个特征值
-    return eigvec[:, selected_idx].real
+    """获得距离矩阵 W 的前 cluster_num 个最小特征值对应的特征向量，使用稳定的特征分解方法"""
+    # 使用 scipy.linalg.eigh 进行稳定的特征分解
+    # eigh 专门用于对称矩阵，数值更稳定，直接按升序返回特征值
+    try:
+        # 只计算最小的 cluster_num 个特征值和特征向量
+        eigval, eigvec = eigh(W_normalized, eigvals=(0, cluster_num-1))
+        
+        # 确保特征向量符号一致性：使每个特征向量的第一个非零元素为正
+        for i in range(eigvec.shape[1]):
+            # 找到第一个绝对值大于1e-10的元素
+            first_nonzero_idx = np.argmax(np.abs(eigvec[:, i]) > 1e-10)
+            if eigvec[first_nonzero_idx, i] < 0:
+                eigvec[:, i] *= -1
+        
+        return eigvec
+        
+    except Exception as e:
+        print(f"警告: scipy.linalg.eigh 失败，回退到 numpy.linalg.eig: {e}")
+        # 回退到原始方法
+        eigval, eigvec = np.linalg.eig(W_normalized)
+        
+        # 按特征值的实部排序
+        idx = np.argsort(eigval.real)
+        
+        # 选择前cluster_num个最小的特征值对应的特征向量
+        selected_idx = idx[:cluster_num]
+        
+        # 只取特征向量的实部
+        eigvec_real = eigvec[:, selected_idx].real
+        
+        return eigvec_real
 
 
 def spectralPartitionGraph(W_normalized, cluster_num):
@@ -106,8 +131,10 @@ def find_optimal_clusters_binary_search(data, epsilon=None, max_clusters=None):
     global_variance = np.sum((data - global_centroid) ** 2)
 
     if epsilon is None:
-        epsilon = 0.65 * global_variance
-        print(f"使用自动计算的 epsilon 阈值: {epsilon:.4f}")
+        epsilon = 0.65
+    
+    epsilon = epsilon * global_variance
+    print(f"使用自动计算的 epsilon 阈值: {epsilon:.4f}")
 
     min_clusters = 1
     best_clusters = max_clusters

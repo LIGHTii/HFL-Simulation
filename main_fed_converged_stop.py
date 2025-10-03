@@ -3,6 +3,9 @@
 # Python version: 3.6
 import os
 import matplotlib
+import random
+import numpy as np
+import torch
 
 from utils.visualization_tool import create_enhanced_visualizations
 
@@ -26,7 +29,7 @@ import csv
 from datetime import datetime
 import pandas as pd
 
-from utils.sampling import get_data
+from utils.sampling import get_data, get_data_test
 from utils.options import args_parser
 from utils.data_partition import get_client_datasets
 from utils.visualize_client_data import visualize_client_data_distribution
@@ -488,14 +491,14 @@ if __name__ == '__main__':
 
     # 先运行带宽分配算法获取实际的客户端数量
     print("正在分析网络拓扑并确定客户端数量...")
-    bipartite_graph, client_nodes, active_es_nodes, A_design, r_client_to_es, r_es, r_es_to_cloud, r_client_to_cloud = run_bandwidth_allocation(
+    client_nodes, active_es_nodes, A_design, r_client_to_es, r_es, r_es_to_cloud, r_client_to_cloud = run_bandwidth_allocation(
         graphml_file=args.graphml_file, 
         es_ratio=args.es_ratio, 
         max_capacity=args.max_capacity, 
         visualize=True)
     
-    if bipartite_graph is None:
-        print("Failed to build bipartite graph, exiting.")
+    if client_nodes is None or len(client_nodes) == 0:
+        print("Failed to get client nodes, exiting.")
         exit(1)
     
     # 根据实际客户端数量更新args.num_users
@@ -508,7 +511,7 @@ if __name__ == '__main__':
     print(f"已更新参数：args.num_users = {args.num_users}")
 
     # 现在使用更新后的参数生成数据分配
-    dataset_train, dataset_test, dict_users, client_classes = get_data(args)
+    dataset_train, dataset_test, dict_users, client_classes = get_data_test(args)
     
     # 验证数据分配的完整性
     if not validate_data_distribution(dict_users, dataset_train, args):
@@ -573,7 +576,7 @@ if __name__ == '__main__':
 
     # 使用谱聚类生成B矩阵（替换原来的随机B矩阵）
     print("开始初始训练和谱聚类...")
-
+    '''
     # 1. 训练初始本地模型并聚合到ES层 - 遵循联邦学习机制
     w_locals, client_label_distributions = train_initial_models_with_es_aggregation(
         args, dataset_train, dict_users, net_glob, A_design, args.num_users
@@ -584,7 +587,18 @@ if __name__ == '__main__':
         args, w_locals, A_design, client_label_distributions
     )
     num_EHs = B_cluster.shape[1]
-    
+    '''
+    # 1. 训练初始本地模型
+    w_locals, client_label_distributions = train_initial_models(
+        args, dataset_train, dict_users, net_glob, num_users
+    )
+
+    # 2. 使用谱聚类生成B矩阵
+    B_cluster = get_B_cluster(
+        args, w_locals, A_design, dict_users, net_glob, client_label_distributions
+    )
+    num_EHs = B_cluster.shape[1]
+
     # 3. 同时生成随机B矩阵用于对比
     B_random = get_B(num_ESs, num_EHs)
     B_hfl = np.ones((num_ESs, 1))
@@ -691,7 +705,7 @@ if __name__ == '__main__':
     print(f"hfl_random 预计单轮通信能耗: {p_hfl_random_sig:.6f}J")
     print(f"hfl_design 预计单轮通信能耗: {p_hfl_design_sig:.6f}J")
     print(f"sfl 预计单轮通信能耗: {p_favg_sig:.6f}J")
-    
+    '''
     # 保存通信时间和能耗结果到CSV
     save_communication_results_to_csv(
         network_scale=num_users,
@@ -1543,3 +1557,4 @@ if __name__ == '__main__':
             print(f"  {model_name}: {row['test_acc']:.2f}%")
     except:
         pass
+'''

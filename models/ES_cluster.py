@@ -5,7 +5,9 @@ import copy
 import torch.multiprocessing as mp
 from tqdm import tqdm
 from models.Update import LocalUpdate  # 导入LocalUpdate
+from models.cluster1 import cluster1
 from models.cluster2 import cluster2
+from models.cluster3 import cluster3
 from models.Nets import MLP, CNNMnist, CNNCifar, LR, ResNet18, VGG11, MobileNetCifar, LeNet5
 # ==================================== ES聚类 ========================================
 def model_to_vector(model_params):
@@ -301,7 +303,8 @@ def spectral_clustering_es(es_models, epsilon=None):
     print(f"[谱聚类] 模型向量矩阵形状: {model_vectors.shape}")
 
     # 进行谱聚类
-    cluster_num, cluster_labels = cluster2(model_vectors, epsilon=epsilon)
+    # change here to cluster1, cluster2, cluster3
+    cluster_num, cluster_labels = cluster1(model_vectors, epsilon=epsilon)
     print(f"[谱聚类] 自动确定的最佳簇数: {cluster_num}")
 
     # 构建B矩阵
@@ -372,11 +375,12 @@ def train_single_client_for_es(args, user_idx, dataset_train, dict_users, w_inpu
         else:
             local_net = CNNMnist(args=args).to(args.device)
     
-    # 创建本地更新实例
+    # 创建本地更新实例 - 使用聚类专用的local_ep
     local = LocalUpdate(
         args=args,
         dataset=dataset_train,
-        idxs=dict_users[user_idx]
+        idxs=dict_users[user_idx],
+        use_cluster_ep=True  # 启用聚类专用的local_ep
     )
     
     # 加载输入权重
@@ -407,7 +411,15 @@ def train_initial_models_with_es_aggregation(args, dataset_train, dict_users, ne
     from models.Fed import FedAvg_layered
     
     print("Training initial local models with ES aggregation for clustering...")
-    print(f"每个客户端训练 {args.local_ep} 轮本地更新")
+    
+    # 根据配置决定使用哪个local_ep参数
+    if hasattr(args, 'cluster_local_ep') and args.cluster_local_ep is not None:
+        cluster_ep = args.cluster_local_ep
+        print(f"🔧 聚类训练使用专用参数: cluster_local_ep={cluster_ep} (联邦学习local_ep={args.local_ep})")
+    else:
+        cluster_ep = args.local_ep
+        print(f"每个客户端训练 {cluster_ep} 轮本地更新 (使用统一的local_ep参数)")
+    
     print(f"ES层聚合 {args.ES_k2} 轮")
     print("📊 ES层聚合将使用基于数据量的加权平均")
     
